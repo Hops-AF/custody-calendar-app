@@ -68,19 +68,19 @@ function addDays(dateStr, n) {
   return `${dt.getFullYear()}-${pad2(dt.getMonth() + 1)}-${pad2(dt.getDate())}`;
 }
 
-// Who has the child the night of `dateStr`? An entry [begin,end] covers the
-// nights begin .. end-1 (handoff happens on the end day). Nights not covered
-// by any explicit entry default to the primary parent.
-function getNightOwner(dateStr, entries, primaryParent) {
+// Which parent has custody on the calendar day `dateStr`? An entry [begin,end]
+// covers every day from begin to end inclusive. Days not covered by any entry
+// are unassigned (shown gray on the calendar).
+function getDayOwner(dateStr, entries) {
   const owners = [];
   for (const e of entries) {
     if (!e.beginDate || !e.endDate || !e.parent) continue;
-    if (dateStr >= e.beginDate && dateStr < e.endDate) owners.push(e.parent);
+    if (dateStr >= e.beginDate && dateStr <= e.endDate) owners.push(e.parent);
   }
   const distinct = [...new Set(owners)];
-  if (distinct.length === 0) return { parent: primaryParent || null, conflict: false, explicit: false };
-  if (distinct.length === 1) return { parent: distinct[0], conflict: false, explicit: true };
-  return { parent: distinct[0], conflict: true, explicit: true };
+  if (distinct.length === 0) return { parent: null, conflict: false };
+  if (distinct.length === 1) return { parent: distinct[0], conflict: false };
+  return { parent: distinct[0], conflict: true };
 }
 
 const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
@@ -196,7 +196,6 @@ function CalendarView({ entries, parents, onAddEntry }) {
   const [viewMonth, setViewMonth] = useState(now.getMonth());
   const [selectedDay, setSelectedDay] = useState(null);
 
-  const primary = parents[0] || null;
   const todayStr = localTodayStr();
 
   const colorFor = (parent) => {
@@ -218,19 +217,19 @@ function CalendarView({ entries, parents, onAddEntry }) {
     else setViewMonth((m) => m + 1);
   };
 
-  // Nights-per-parent tally for the displayed month
+  // Days-per-parent tally for the displayed month
   const monthTally = {};
   let hasConflict = false;
   for (let day = 1; day <= daysInMonth; day++) {
     const ds = `${viewYear}-${pad2(viewMonth + 1)}-${pad2(day)}`;
-    const owner = getNightOwner(ds, entries, primary);
+    const owner = getDayOwner(ds, entries);
     if (owner.conflict) hasConflict = true;
     if (owner.parent) monthTally[owner.parent] = (monthTally[owner.parent] || 0) + 1;
   }
 
-  const selectedOwner = selectedDay ? getNightOwner(selectedDay, entries, primary) : null;
+  const selectedOwner = selectedDay ? getDayOwner(selectedDay, entries) : null;
   const selectedEntries = selectedDay
-    ? entries.filter((e) => e.beginDate && e.endDate && selectedDay >= e.beginDate && selectedDay < e.endDate)
+    ? entries.filter((e) => e.beginDate && e.endDate && selectedDay >= e.beginDate && selectedDay <= e.endDate)
     : [];
 
   return (
@@ -256,7 +255,7 @@ function CalendarView({ entries, parents, onAddEntry }) {
           {Array.from({ length: daysInMonth }).map((_, i) => {
             const day = i + 1;
             const ds = `${viewYear}-${pad2(viewMonth + 1)}-${pad2(day)}`;
-            const owner = getNightOwner(ds, entries, primary);
+            const owner = getDayOwner(ds, entries);
             const col = owner.parent ? colorFor(owner.parent) : null;
             const isToday = ds === todayStr;
             const isSel = ds === selectedDay;
@@ -264,12 +263,11 @@ function CalendarView({ entries, parents, onAddEntry }) {
               <TouchableOpacity key={day} style={styles.calCell} activeOpacity={0.6} onPress={() => setSelectedDay(isSel ? null : ds)}>
                 <View style={[
                   styles.calDay,
-                  col && { backgroundColor: col.bg },
+                  { backgroundColor: col ? col.solid : '#e5e7eb' },
                   owner.conflict && styles.calDayConflict,
                   isSel && styles.calDaySelected,
                 ]}>
-                  <Text style={[styles.calDayNum, col && { color: col.fg }, isToday && styles.calDayToday]}>{day}</Text>
-                  {col && <View style={[styles.calDot, { backgroundColor: col.solid }]} />}
+                  <Text style={[styles.calDayNum, { color: col ? '#fff' : '#9ca3af' }, isToday && styles.calDayToday]}>{day}</Text>
                 </View>
               </TouchableOpacity>
             );
@@ -279,7 +277,7 @@ function CalendarView({ entries, parents, onAddEntry }) {
 
       {/* Legend + month tally */}
       <View style={styles.card}>
-        <Text style={styles.fieldLabel}>Legend · nights this month</Text>
+        <Text style={styles.fieldLabel}>Legend · days this month</Text>
         {parents.length === 0 && (
           <Text style={styles.modalEmpty}>Add parents in the Entries tab to color the calendar.</Text>
         )}
@@ -289,15 +287,19 @@ function CalendarView({ entries, parents, onAddEntry }) {
             <View key={p} style={styles.legendRow}>
               <View style={[styles.legendSwatch, { backgroundColor: col.solid }]} />
               <Text style={styles.legendText}>{p}{idx === 0 ? ' (Primary)' : ''}</Text>
-              <Text style={styles.legendCount}>{monthTally[p] || 0} nights</Text>
+              <Text style={styles.legendCount}>{monthTally[p] || 0} days</Text>
             </View>
           );
         })}
+        <View style={styles.legendRow}>
+          <View style={[styles.legendSwatch, { backgroundColor: '#e5e7eb' }]} />
+          <Text style={styles.legendText}>No custody entry</Text>
+        </View>
         {hasConflict && (
-          <Text style={styles.calConflictNote}>⚠ Some nights have conflicting entries (outlined in red).</Text>
+          <Text style={styles.calConflictNote}>⚠ Some days have conflicting entries (outlined in red).</Text>
         )}
         <Text style={styles.calHint}>
-          Each day shows who the child stays with that night. Unassigned nights default to the primary parent.
+          Each day is colored by the parent who has custody. Days with no custody entry are gray.
         </Text>
       </View>
 
@@ -306,8 +308,8 @@ function CalendarView({ entries, parents, onAddEntry }) {
         <View style={styles.card}>
           <Text style={styles.sectionTitle}>{displayDate(selectedDay)}</Text>
           <Text style={styles.windowInfo}>
-            Night with: <Text style={{ fontWeight: '700', color: '#111827' }}>{selectedOwner?.parent || '—'}</Text>
-            {selectedOwner?.conflict ? '  ⚠ conflicting entries' : (selectedOwner?.explicit ? '' : '  (default · primary)')}
+            Custody: <Text style={{ fontWeight: '700', color: '#111827' }}>{selectedOwner?.parent || 'Unassigned'}</Text>
+            {selectedOwner?.conflict ? '  ⚠ conflicting entries' : (selectedOwner?.parent ? '' : '  (no entry for this day)')}
           </Text>
           {selectedEntries.map((e) => (
             <View key={e.id} style={styles.durationBadge}>
@@ -1323,11 +1325,10 @@ const styles = StyleSheet.create({
   calWeekday: { flex: 1, textAlign: 'center', fontSize: 12, fontWeight: '600', color: '#9ca3af' },
   calGrid: { flexDirection: 'row', flexWrap: 'wrap' },
   calCell: { width: `${100 / 7}%`, aspectRatio: 1, padding: 2 },
-  calDay: { flex: 1, borderRadius: 8, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: 'transparent' },
-  calDayNum: { fontSize: 14, color: '#374151', fontWeight: '500' },
+  calDay: { flex: 1, borderRadius: 8, alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: 'transparent' },
+  calDayNum: { fontSize: 14, fontWeight: '600' },
   calDayToday: { fontWeight: '800', textDecorationLine: 'underline' },
-  calDot: { width: 5, height: 5, borderRadius: 3, marginTop: 2 },
-  calDaySelected: { borderColor: '#111827', borderWidth: 2 },
+  calDaySelected: { borderColor: '#111827', borderWidth: 3 },
   calDayConflict: { borderColor: '#dc2626', borderWidth: 2, borderStyle: 'dashed' },
   calConflictNote: { fontSize: 12, color: '#dc2626', marginTop: 8 },
   calHint: { fontSize: 12, color: '#9ca3af', marginTop: 10, lineHeight: 17 },
