@@ -86,14 +86,23 @@ function getDayOwner(dateStr, entries) {
 const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 const DAY_NAMES = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
 
-const PARENT_PALETTE = [
-  { bg: '#dbeafe', fg: '#1d4ed8', solid: '#2563eb' }, // blue
-  { bg: '#dcfce7', fg: '#15803d', solid: '#16a34a' }, // green
-  { bg: '#fef3c7', fg: '#b45309', solid: '#d97706' }, // amber
-  { bg: '#ede9fe', fg: '#6d28d9', solid: '#7c3aed' }, // purple
-  { bg: '#fce7f3', fg: '#be185d', solid: '#db2777' }, // pink
-  { bg: '#ccfbf1', fg: '#0f766e', solid: '#0d9488' }, // teal
+const COLOR_CHOICES = [
+  '#2563eb', '#16a34a', '#d97706', '#7c3aed', '#db2777', '#0d9488',
+  '#dc2626', '#ca8a04', '#4f46e5', '#0891b2', '#65a30d', '#e11d48',
 ];
+
+// Resolve a stored color for a name, falling back to a palette color by position.
+function colorForName(name, list, overrides) {
+  if (overrides && overrides[name]) return overrides[name];
+  const i = list.indexOf(name);
+  return i >= 0 ? COLOR_CHOICES[i % COLOR_CHOICES.length] : '#9ca3af';
+}
+
+// Pick the first palette color not already used.
+function nextColor(overrides) {
+  const used = Object.values(overrides || {});
+  return COLOR_CHOICES.find((c) => !used.includes(c)) || COLOR_CHOICES[Object.keys(overrides || {}).length % COLOR_CHOICES.length];
+}
 
 // ── storage ───────────────────────────────────────────────────────────────────
 
@@ -188,9 +197,55 @@ function generateJointWeeklySchedule(parent1, parent2, startDateStr, endDateStr,
   return entries;
 }
 
+// ~70/30: every other weekend for the secondary parent plus one midweek
+// overnight (single day) each week.
+function generateEOWMidweek(secondaryParent, startDateStr, endDateStr, childrenList, weekendStartDay, midweekDow) {
+  const entries = generateEOWSchedule(secondaryParent, startDateStr, endDateStr, childrenList, weekendStartDay);
+  const start = new Date(startDateStr + 'T00:00:00.000');
+  const end = new Date(endDateStr + 'T00:00:00.000');
+  let current = new Date(start);
+  while (current.getDay() !== midweekDow) current.setDate(current.getDate() + 1);
+  while (current <= end) {
+    const cp = {};
+    childrenList.forEach((c) => { cp[c] = true; });
+    const ds = `${current.getFullYear()}-${pad2(current.getMonth() + 1)}-${pad2(current.getDate())}`;
+    entries.push({ id: generateId(), parent: secondaryParent, beginDate: ds, endDate: ds, childrenPresent: cp, note: 'Midweek' });
+    current.setDate(current.getDate() + 7);
+  }
+  return entries;
+}
+
+// 50/50 "2-2-3" rotation between two parents over a 14-day cycle.
+function generate223(parent1, parent2, startDateStr, endDateStr, childrenList) {
+  const entries = [];
+  const start = new Date(startDateStr + 'T00:00:00.000');
+  const end = new Date(endDateStr + 'T00:00:00.000');
+  const blocks = [
+    [0, 1, parent1], [2, 3, parent2], [4, 6, parent1],
+    [7, 8, parent2], [9, 10, parent1], [11, 13, parent2],
+  ];
+  const fmt = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+  let cycle = new Date(start);
+  while (cycle.getDay() !== 1) cycle.setDate(cycle.getDate() + 1); // first Monday
+  while (cycle <= end) {
+    for (const [o0, o1, parent] of blocks) {
+      const b = new Date(cycle); b.setDate(b.getDate() + o0);
+      const e = new Date(cycle); e.setDate(e.getDate() + o1);
+      if (e < start || b > end) continue;
+      const ab = b < start ? new Date(start) : b;
+      const ae = e > end ? new Date(end) : e;
+      const cp = {};
+      childrenList.forEach((c) => { cp[c] = true; });
+      entries.push({ id: generateId(), parent, beginDate: fmt(ab), endDate: fmt(ae), childrenPresent: cp, note: '2-2-3' });
+    }
+    cycle.setDate(cycle.getDate() + 14);
+  }
+  return entries;
+}
+
 // ── CalendarView ──────────────────────────────────────────────────────────────
 
-function CalendarView({ entries, parents, onCreateEntry }) {
+function CalendarView({ entries, parents, parentColors, onCreateEntry }) {
   const now = new Date();
   const [viewYear, setViewYear] = useState(now.getFullYear());
   const [viewMonth, setViewMonth] = useState(now.getMonth());
@@ -199,10 +254,7 @@ function CalendarView({ entries, parents, onCreateEntry }) {
 
   const todayStr = localTodayStr();
 
-  const colorFor = (parent) => {
-    const idx = parents.indexOf(parent);
-    return idx >= 0 ? PARENT_PALETTE[idx % PARENT_PALETTE.length] : null;
-  };
+  const colorFor = (parent) => colorForName(parent, parents, parentColors);
 
   const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
   const firstDow = new Date(viewYear, viewMonth, 1).getDay();
@@ -286,7 +338,7 @@ function CalendarView({ entries, parents, onCreateEntry }) {
               <TouchableOpacity key={day} style={styles.calCell} activeOpacity={0.6} onPress={() => handleDayClick(ds)}>
                 <View style={[
                   styles.calDay,
-                  { backgroundColor: col ? col.solid : '#e5e7eb' },
+                  { backgroundColor: col || '#e5e7eb' },
                   borderStyle,
                 ]}>
                   <Text style={[styles.calDayNum, { color: col ? '#fff' : '#9ca3af' }, isToday && styles.calDayToday]}>{day}</Text>
@@ -316,7 +368,7 @@ function CalendarView({ entries, parents, onCreateEntry }) {
                   return (
                     <TouchableOpacity
                       key={p}
-                      style={{ backgroundColor: col.solid, paddingHorizontal: 14, paddingVertical: 9, borderRadius: 8 }}
+                      style={{ backgroundColor: col, paddingHorizontal: 14, paddingVertical: 9, borderRadius: 8 }}
                       onPress={() => { onCreateEntry(pendingRange.start, pendingRange.end, p); resetSelection(); }}
                     >
                       <Text style={styles.btnText}>{p}{idx === 0 ? ' (Primary)' : ''}</Text>
@@ -342,7 +394,7 @@ function CalendarView({ entries, parents, onCreateEntry }) {
           const col = colorFor(p);
           return (
             <View key={p} style={styles.legendRow}>
-              <View style={[styles.legendSwatch, { backgroundColor: col.solid }]} />
+              <View style={[styles.legendSwatch, { backgroundColor: col }]} />
               <Text style={styles.legendText}>{p}{idx === 0 ? ' (Primary)' : ''}</Text>
               <Text style={styles.legendCount}>{monthTally[p] || 0} days</Text>
             </View>
@@ -368,6 +420,9 @@ function CalendarView({ entries, parents, onCreateEntry }) {
 export default function App() {
   const [parents, setParents] = useState([]);
   const [children, setChildren] = useState([]);
+  const [parentColors, setParentColors] = useState({});
+  const [childColors, setChildColors] = useState({});
+  const [colorPicker, setColorPicker] = useState(null); // { type: 'parent'|'child', name }
   const [entries, setEntries] = useState([
     { id: generateId(), parent: '', beginDate: '', endDate: '', childrenPresent: {}, note: '' },
   ]);
@@ -400,6 +455,7 @@ export default function App() {
   const [scheduleJointParent1, setScheduleJointParent1] = useState('');
   const [scheduleJointParent2, setScheduleJointParent2] = useState('');
   const [scheduleEOWDay, setScheduleEOWDay] = useState('fri');
+  const [scheduleMidweekDow, setScheduleMidweekDow] = useState(3); // Wednesday
   const [scheduleParentPickerTarget, setScheduleParentPickerTarget] = useState(null);
 
   const today = new Date();
@@ -413,6 +469,8 @@ export default function App() {
       if (data) {
         if (data.parents) setParents(data.parents);
         if (data.children) setChildren(data.children);
+        if (data.parentColors) setParentColors(data.parentColors);
+        if (data.childColors) setChildColors(data.childColors);
         if (data.entries) setEntries(data.entries);
         if (data.reportingMode) setReportingMode(data.reportingMode);
         if (data.customStart) setCustomStart(data.customStart);
@@ -428,8 +486,8 @@ export default function App() {
 
   useEffect(() => {
     if (!loaded) return;
-    saveData({ parents, children, entries, reportingMode, customStart, customEnd, quarterYear, quarter, preset, analysisChild });
-  }, [loaded, parents, children, entries, reportingMode, customStart, customEnd, quarterYear, quarter, preset, analysisChild]);
+    saveData({ parents, children, parentColors, childColors, entries, reportingMode, customStart, customEnd, quarterYear, quarter, preset, analysisChild });
+  }, [loaded, parents, children, parentColors, childColors, entries, reportingMode, customStart, customEnd, quarterYear, quarter, preset, analysisChild]);
 
   // ── config ───────────────────────────────────────────────────────────────────
 
@@ -437,6 +495,7 @@ export default function App() {
     const name = newParentName.trim();
     if (!name || parents.includes(name)) return;
     setParents([...parents, name]);
+    setParentColors({ ...parentColors, [name]: nextColor(parentColors) });
     setNewParentName('');
   };
 
@@ -444,14 +503,30 @@ export default function App() {
     if (parents.length <= 1) return;
     Alert.alert('Remove Parent', `Remove "${parent}"?`, [
       { text: 'Cancel' },
-      { text: 'Remove', style: 'destructive', onPress: () => setParents(parents.filter((p) => p !== parent)) },
+      {
+        text: 'Remove', style: 'destructive', onPress: () => {
+          setParents(parents.filter((p) => p !== parent));
+          const nc = { ...parentColors }; delete nc[parent]; setParentColors(nc);
+        },
+      },
     ]);
+  };
+
+  const setPrimary = (parent) => {
+    setParents([parent, ...parents.filter((p) => p !== parent)]);
+  };
+
+  const setColor = (type, name, color) => {
+    if (type === 'parent') setParentColors({ ...parentColors, [name]: color });
+    else setChildColors({ ...childColors, [name]: color });
+    setColorPicker(null);
   };
 
   const addChild = () => {
     const name = newChildName.trim();
     if (!name || children.includes(name)) return;
     setChildren([...children, name]);
+    setChildColors({ ...childColors, [name]: nextColor(childColors) });
     setEntries(entries.map((e) => ({ ...e, childrenPresent: { ...e.childrenPresent, [name]: true } })));
     setNewChildName('');
   };
@@ -463,6 +538,7 @@ export default function App() {
       {
         text: 'Remove', style: 'destructive', onPress: () => {
           setChildren(children.filter((c) => c !== child));
+          const nc = { ...childColors }; delete nc[child]; setChildColors(nc);
           setEntries(entries.map((e) => {
             const cp = { ...e.childrenPresent };
             delete cp[child];
@@ -512,18 +588,22 @@ export default function App() {
 
   const runScheduleGenerator = () => {
     let newEntries = [];
-    if (schedulePattern === 'eow') {
+    if (schedulePattern === 'eow' || schedulePattern === 'eow-midweek') {
       if (!scheduleSecondaryParent || !scheduleStart || !scheduleEnd) {
         Alert.alert('Missing Info', 'Please select a parent and set a date range.');
         return;
       }
-      newEntries = generateEOWSchedule(scheduleSecondaryParent, scheduleStart, scheduleEnd, children, scheduleEOWDay);
+      newEntries = schedulePattern === 'eow'
+        ? generateEOWSchedule(scheduleSecondaryParent, scheduleStart, scheduleEnd, children, scheduleEOWDay)
+        : generateEOWMidweek(scheduleSecondaryParent, scheduleStart, scheduleEnd, children, scheduleEOWDay, scheduleMidweekDow);
     } else {
       if (!scheduleJointParent1 || !scheduleJointParent2 || !scheduleStart || !scheduleEnd) {
         Alert.alert('Missing Info', 'Please select both parents and set a date range.');
         return;
       }
-      newEntries = generateJointWeeklySchedule(scheduleJointParent1, scheduleJointParent2, scheduleStart, scheduleEnd, children);
+      newEntries = schedulePattern === '2-2-3'
+        ? generate223(scheduleJointParent1, scheduleJointParent2, scheduleStart, scheduleEnd, children)
+        : generateJointWeeklySchedule(scheduleJointParent1, scheduleJointParent2, scheduleStart, scheduleEnd, children);
     }
     if (newEntries.length === 0) {
       Alert.alert('No Entries', 'No entries generated. Check your date range.');
@@ -726,7 +806,7 @@ export default function App() {
           </View>
 
           {viewMode === 'calendar' ? (
-            <CalendarView entries={entries} parents={parents} onCreateEntry={createEntryFromCalendar} />
+            <CalendarView entries={entries} parents={parents} parentColors={parentColors} onCreateEntry={createEntryFromCalendar} />
           ) : (
           <>
           {/* Configuration */}
@@ -745,7 +825,15 @@ export default function App() {
                 <View style={styles.tagRow}>
                   {parents.map((p, i) => (
                     <View key={p} style={styles.tag}>
+                      <TouchableOpacity onPress={() => setColorPicker({ type: 'parent', name: p })}>
+                        <View style={[styles.tagSwatch, { backgroundColor: colorForName(p, parents, parentColors) }]} />
+                      </TouchableOpacity>
                       <Text style={styles.tagText}>{p}{i === 0 ? ' (Primary)' : ''}</Text>
+                      {i !== 0 && (
+                        <TouchableOpacity onPress={() => setPrimary(p)}>
+                          <Text style={styles.tagStar}>☆</Text>
+                        </TouchableOpacity>
+                      )}
                       <TouchableOpacity onPress={() => removeParent(p)} disabled={parents.length === 1}>
                         <Text style={[styles.tagX, parents.length === 1 && styles.tagXDisabled]}>×</Text>
                       </TouchableOpacity>
@@ -771,6 +859,9 @@ export default function App() {
                 <View style={styles.tagRow}>
                   {children.map((c) => (
                     <View key={c} style={styles.tag}>
+                      <TouchableOpacity onPress={() => setColorPicker({ type: 'child', name: c })}>
+                        <View style={[styles.tagSwatch, { backgroundColor: colorForName(c, children, childColors) }]} />
+                      </TouchableOpacity>
                       <Text style={styles.tagText}>{c}</Text>
                       <TouchableOpacity onPress={() => removeChild(c)} disabled={children.length === 1}>
                         <Text style={[styles.tagX, children.length === 1 && styles.tagXDisabled]}>×</Text>
@@ -1077,6 +1168,37 @@ export default function App() {
         </TouchableOpacity>
       </Modal>
 
+      {/* Color Picker Modal */}
+      <Modal
+        visible={colorPicker !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setColorPicker(null)}
+      >
+        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setColorPicker(null)}>
+          <View style={styles.modalBox}>
+            <Text style={styles.modalTitle}>Color for {colorPicker?.name}</Text>
+            <View style={styles.swatchGrid}>
+              {COLOR_CHOICES.map((c) => {
+                const current = colorPicker
+                  ? colorForName(colorPicker.name, colorPicker.type === 'parent' ? parents : children, colorPicker.type === 'parent' ? parentColors : childColors)
+                  : null;
+                return (
+                  <TouchableOpacity
+                    key={c}
+                    onPress={() => setColor(colorPicker.type, colorPicker.name, c)}
+                    style={[styles.swatchChoice, { backgroundColor: c }, current === c && styles.swatchChoiceSelected]}
+                  />
+                );
+              })}
+            </View>
+            <TouchableOpacity style={styles.modalCancel} onPress={() => setColorPicker(null)}>
+              <Text style={styles.modalCancelText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
       {/* Schedule Generator Modal */}
       <Modal
         visible={showScheduleGen}
@@ -1092,18 +1214,20 @@ export default function App() {
               {/* Pattern */}
               <Text style={[styles.fieldLabel, { marginHorizontal: 16, marginTop: 12 }]}>Custody Pattern</Text>
               <View style={[styles.chipRow, { marginHorizontal: 16, marginBottom: 12 }]}>
-                <TouchableOpacity
-                  style={[styles.chip, schedulePattern === 'eow' && styles.chipActive]}
-                  onPress={() => setSchedulePattern('eow')}
-                >
-                  <Text style={[styles.chipText, schedulePattern === 'eow' && styles.chipTextActive]}>Primary + Every Other Weekend</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.chip, schedulePattern === 'joint-weekly' && styles.chipActive]}
-                  onPress={() => setSchedulePattern('joint-weekly')}
-                >
-                  <Text style={[styles.chipText, schedulePattern === 'joint-weekly' && styles.chipTextActive]}>Joint / Alternating Weekly</Text>
-                </TouchableOpacity>
+                {[
+                  { v: 'eow', label: 'Every other weekend (~80/20)' },
+                  { v: 'eow-midweek', label: 'EOW + midweek (~70/30)' },
+                  { v: 'joint-weekly', label: 'Alternating weeks (50/50)' },
+                  { v: '2-2-3', label: '2-2-3 rotation (50/50)' },
+                ].map((opt) => (
+                  <TouchableOpacity
+                    key={opt.v}
+                    style={[styles.chip, schedulePattern === opt.v && styles.chipActive]}
+                    onPress={() => setSchedulePattern(opt.v)}
+                  >
+                    <Text style={[styles.chipText, schedulePattern === opt.v && styles.chipTextActive]}>{opt.label}</Text>
+                  </TouchableOpacity>
+                ))}
               </View>
 
               {/* Date range */}
@@ -1122,10 +1246,10 @@ export default function App() {
                 </TouchableOpacity>
               </View>
 
-              {/* EOW options */}
-              {schedulePattern === 'eow' && (
+              {/* EOW / EOW+midweek options */}
+              {(schedulePattern === 'eow' || schedulePattern === 'eow-midweek') && (
                 <View style={{ marginHorizontal: 16 }}>
-                  <Text style={[styles.fieldLabel, { marginTop: 12 }]}>Non-Primary Parent (gets EOW)</Text>
+                  <Text style={[styles.fieldLabel, { marginTop: 12 }]}>Non-primary parent (gets the weekends)</Text>
                   <TouchableOpacity style={styles.selectBtn} onPress={() => setScheduleParentPickerTarget('secondary')}>
                     <Text style={scheduleSecondaryParent ? styles.selectBtnText : styles.selectBtnPlaceholder}>
                       {scheduleSecondaryParent || 'Select parent…'}
@@ -1141,20 +1265,32 @@ export default function App() {
                       <Text style={[styles.chipText, scheduleEOWDay === 'sat' && styles.chipTextActive]}>Saturday</Text>
                     </TouchableOpacity>
                   </View>
+                  {schedulePattern === 'eow-midweek' && (
+                    <View>
+                      <Text style={[styles.fieldLabel, { marginTop: 8 }]}>Midweek Overnight</Text>
+                      <View style={styles.chipRow}>
+                        {[{ d: 1, l: 'Mon' }, { d: 2, l: 'Tue' }, { d: 3, l: 'Wed' }, { d: 4, l: 'Thu' }].map((o) => (
+                          <TouchableOpacity key={o.d} style={[styles.chip, scheduleMidweekDow === o.d && styles.chipActive]} onPress={() => setScheduleMidweekDow(o.d)}>
+                            <Text style={[styles.chipText, scheduleMidweekDow === o.d && styles.chipTextActive]}>{o.l}</Text>
+                          </TouchableOpacity>
+                        ))}
+                      </View>
+                    </View>
+                  )}
                 </View>
               )}
 
-              {/* Joint weekly options */}
-              {schedulePattern === 'joint-weekly' && (
+              {/* Joint weekly / 2-2-3 options */}
+              {(schedulePattern === 'joint-weekly' || schedulePattern === '2-2-3') && (
                 <View style={{ marginHorizontal: 16 }}>
-                  <Text style={[styles.fieldLabel, { marginTop: 12 }]}>Parent — Week 1</Text>
+                  <Text style={[styles.fieldLabel, { marginTop: 12 }]}>{schedulePattern === '2-2-3' ? 'First parent (starts cycle)' : 'Parent — Week 1'}</Text>
                   <TouchableOpacity style={styles.selectBtn} onPress={() => setScheduleParentPickerTarget('joint1')}>
                     <Text style={scheduleJointParent1 ? styles.selectBtnText : styles.selectBtnPlaceholder}>
                       {scheduleJointParent1 || 'Select parent…'}
                     </Text>
                     <Text style={styles.selectArrow}>›</Text>
                   </TouchableOpacity>
-                  <Text style={[styles.fieldLabel, { marginTop: 8 }]}>Parent — Week 2</Text>
+                  <Text style={[styles.fieldLabel, { marginTop: 8 }]}>{schedulePattern === '2-2-3' ? 'Second parent' : 'Parent — Week 2'}</Text>
                   <TouchableOpacity style={styles.selectBtn} onPress={() => setScheduleParentPickerTarget('joint2')}>
                     <Text style={scheduleJointParent2 ? styles.selectBtnText : styles.selectBtnPlaceholder}>
                       {scheduleJointParent2 || 'Select parent…'}
@@ -1262,7 +1398,12 @@ const styles = StyleSheet.create({
     borderColor: '#bfdbfe',
   },
   tagText: { fontSize: 13, color: '#1d4ed8', marginRight: 4 },
+  tagSwatch: { width: 14, height: 14, borderRadius: 4, marginRight: 6, borderWidth: 1, borderColor: 'rgba(0,0,0,0.15)' },
+  tagStar: { fontSize: 15, color: '#6b7280', marginRight: 4 },
   tagX: { fontSize: 18, color: '#dc2626', lineHeight: 20 },
+  swatchGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, padding: 16 },
+  swatchChoice: { width: 36, height: 36, borderRadius: 18, borderWidth: 2, borderColor: '#e5e7eb' },
+  swatchChoiceSelected: { borderColor: '#111827', borderWidth: 3 },
   tagXDisabled: { color: '#d1d5db' },
 
   inputRow: { flexDirection: 'row', gap: 8, alignItems: 'center' },
