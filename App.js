@@ -190,11 +190,12 @@ function generateJointWeeklySchedule(parent1, parent2, startDateStr, endDateStr,
 
 // ── CalendarView ──────────────────────────────────────────────────────────────
 
-function CalendarView({ entries, parents, onAddEntry }) {
+function CalendarView({ entries, parents, onCreateEntry }) {
   const now = new Date();
   const [viewYear, setViewYear] = useState(now.getFullYear());
   const [viewMonth, setViewMonth] = useState(now.getMonth());
-  const [selectedDay, setSelectedDay] = useState(null);
+  const [pendingStart, setPendingStart] = useState(null);
+  const [pendingRange, setPendingRange] = useState(null); // {start, end} awaiting parent
 
   const todayStr = localTodayStr();
 
@@ -206,15 +207,25 @@ function CalendarView({ entries, parents, onAddEntry }) {
   const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
   const firstDow = new Date(viewYear, viewMonth, 1).getDay();
 
+  const resetSelection = () => { setPendingStart(null); setPendingRange(null); };
   const prevMonth = () => {
-    setSelectedDay(null);
+    resetSelection();
     if (viewMonth === 0) { setViewMonth(11); setViewYear((y) => y - 1); }
     else setViewMonth((m) => m - 1);
   };
   const nextMonth = () => {
-    setSelectedDay(null);
+    resetSelection();
     if (viewMonth === 11) { setViewMonth(0); setViewYear((y) => y + 1); }
     else setViewMonth((m) => m + 1);
+  };
+
+  const handleDayClick = (ds) => {
+    if (pendingRange) { setPendingRange(null); setPendingStart(ds); return; }
+    if (!pendingStart) { setPendingStart(ds); return; }
+    const start = ds < pendingStart ? ds : pendingStart;
+    const end = ds < pendingStart ? pendingStart : ds;
+    setPendingRange({ start, end });
+    setPendingStart(null);
   };
 
   // Days-per-parent tally for the displayed month
@@ -227,10 +238,12 @@ function CalendarView({ entries, parents, onAddEntry }) {
     if (owner.parent) monthTally[owner.parent] = (monthTally[owner.parent] || 0) + 1;
   }
 
-  const selectedOwner = selectedDay ? getDayOwner(selectedDay, entries) : null;
-  const selectedEntries = selectedDay
-    ? entries.filter((e) => e.beginDate && e.endDate && selectedDay >= e.beginDate && selectedDay <= e.endDate)
-    : [];
+  const isSelEdge = (ds) => ds === pendingStart || (pendingRange && (ds === pendingRange.start || ds === pendingRange.end));
+  const inPendingRange = (ds) => pendingRange && ds >= pendingRange.start && ds <= pendingRange.end;
+
+  const hint = pendingRange ? 'Choose which parent has custody for this range.'
+    : pendingStart ? 'Now tap the END date (or the same day for one day).'
+    : 'Tap the START date, then the END date, to add custody.';
 
   return (
     <View>
@@ -246,6 +259,8 @@ function CalendarView({ entries, parents, onAddEntry }) {
           </TouchableOpacity>
         </View>
 
+        <Text style={styles.calSelectHint}>{hint}</Text>
+
         <View style={styles.calWeekRow}>
           {DAY_NAMES.map((d) => <Text key={d} style={styles.calWeekday}>{d}</Text>)}
         </View>
@@ -258,14 +273,21 @@ function CalendarView({ entries, parents, onAddEntry }) {
             const owner = getDayOwner(ds, entries);
             const col = owner.parent ? colorFor(owner.parent) : null;
             const isToday = ds === todayStr;
-            const isSel = ds === selectedDay;
+            const selEdge = isSelEdge(ds);
+            const inRange = inPendingRange(ds);
+            const borderStyle = selEdge
+              ? { borderColor: '#2563eb', borderWidth: 3 }
+              : inRange
+                ? { borderColor: '#93c5fd', borderWidth: 2 }
+                : owner.conflict
+                  ? { borderColor: '#dc2626', borderWidth: 2, borderStyle: 'dashed' }
+                  : null;
             return (
-              <TouchableOpacity key={day} style={styles.calCell} activeOpacity={0.6} onPress={() => setSelectedDay(isSel ? null : ds)}>
+              <TouchableOpacity key={day} style={styles.calCell} activeOpacity={0.6} onPress={() => handleDayClick(ds)}>
                 <View style={[
                   styles.calDay,
                   { backgroundColor: col ? col.solid : '#e5e7eb' },
-                  owner.conflict && styles.calDayConflict,
-                  isSel && styles.calDaySelected,
+                  borderStyle,
                 ]}>
                   <Text style={[styles.calDayNum, { color: col ? '#fff' : '#9ca3af' }, isToday && styles.calDayToday]}>{day}</Text>
                 </View>
@@ -274,6 +296,41 @@ function CalendarView({ entries, parents, onAddEntry }) {
           })}
         </View>
       </View>
+
+      {/* Range assignment panel */}
+      {pendingRange && (
+        <View style={styles.card}>
+          <Text style={styles.sectionTitle}>New custody period</Text>
+          <Text style={styles.windowInfo}>
+            {displayDate(pendingRange.start)} – {displayDate(pendingRange.end)}
+            {'  ·  '}{daysInclusive(pendingRange.start, pendingRange.end)} days, {nightsInclusive(pendingRange.start, pendingRange.end)} nights
+          </Text>
+          {parents.length === 0 ? (
+            <Text style={styles.modalEmpty}>Add parents in the Entries tab first, then you can assign custody.</Text>
+          ) : (
+            <View>
+              <Text style={[styles.fieldLabel, { marginTop: 12 }]}>Assign to</Text>
+              <View style={styles.chipRow}>
+                {parents.map((p, idx) => {
+                  const col = colorFor(p);
+                  return (
+                    <TouchableOpacity
+                      key={p}
+                      style={{ backgroundColor: col.solid, paddingHorizontal: 14, paddingVertical: 9, borderRadius: 8 }}
+                      onPress={() => { onCreateEntry(pendingRange.start, pendingRange.end, p); resetSelection(); }}
+                    >
+                      <Text style={styles.btnText}>{p}{idx === 0 ? ' (Primary)' : ''}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            </View>
+          )}
+          <TouchableOpacity style={[styles.btnDanger, { marginTop: 14, alignSelf: 'flex-start' }]} onPress={resetSelection}>
+            <Text style={styles.btnText}>Cancel</Text>
+          </TouchableOpacity>
+        </View>
+      )}
 
       {/* Legend + month tally */}
       <View style={styles.card}>
@@ -302,27 +359,6 @@ function CalendarView({ entries, parents, onAddEntry }) {
           Each day is colored by the parent who has custody. Days with no custody entry are gray.
         </Text>
       </View>
-
-      {/* Selected day detail */}
-      {selectedDay && (
-        <View style={styles.card}>
-          <Text style={styles.sectionTitle}>{displayDate(selectedDay)}</Text>
-          <Text style={styles.windowInfo}>
-            Custody: <Text style={{ fontWeight: '700', color: '#111827' }}>{selectedOwner?.parent || 'Unassigned'}</Text>
-            {selectedOwner?.conflict ? '  ⚠ conflicting entries' : (selectedOwner?.parent ? '' : '  (no entry for this day)')}
-          </Text>
-          {selectedEntries.map((e) => (
-            <View key={e.id} style={styles.durationBadge}>
-              <Text style={styles.durationText}>
-                {e.parent}: {displayDate(e.beginDate)} – {displayDate(e.endDate)}{e.note ? ` · ${e.note}` : ''}
-              </Text>
-            </View>
-          ))}
-          <TouchableOpacity style={[styles.btnPrimary, { marginTop: 12, alignSelf: 'flex-start' }]} onPress={() => onAddEntry(selectedDay)}>
-            <Text style={styles.btnText}>+ Add entry on this day</Text>
-          </TouchableOpacity>
-        </View>
-      )}
     </View>
   );
 }
@@ -446,11 +482,10 @@ export default function App() {
     setEntries([...entries, { id: generateId(), parent: '', beginDate: '', endDate: '', childrenPresent: cp, note: '' }]);
   };
 
-  const addEntryOnDay = (dayStr) => {
+  const createEntryFromCalendar = (start, end, parent) => {
     const cp = {};
     children.forEach((c) => { cp[c] = true; });
-    setEntries([...entries, { id: generateId(), parent: '', beginDate: dayStr, endDate: addDays(dayStr, 1), childrenPresent: cp, note: '' }]);
-    setViewMode('list');
+    setEntries([...entries, { id: generateId(), parent, beginDate: start, endDate: end, childrenPresent: cp, note: '' }]);
   };
 
   const removeRow = (id) => {
@@ -691,7 +726,7 @@ export default function App() {
           </View>
 
           {viewMode === 'calendar' ? (
-            <CalendarView entries={entries} parents={parents} onAddEntry={addEntryOnDay} />
+            <CalendarView entries={entries} parents={parents} onCreateEntry={createEntryFromCalendar} />
           ) : (
           <>
           {/* Configuration */}
@@ -1332,6 +1367,7 @@ const styles = StyleSheet.create({
   calDayConflict: { borderColor: '#dc2626', borderWidth: 2, borderStyle: 'dashed' },
   calConflictNote: { fontSize: 12, color: '#dc2626', marginTop: 8 },
   calHint: { fontSize: 12, color: '#9ca3af', marginTop: 10, lineHeight: 17 },
+  calSelectHint: { fontSize: 12, color: '#2563eb', textAlign: 'center', marginBottom: 10 },
   legendRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 5 },
   legendSwatch: { width: 16, height: 16, borderRadius: 4, marginRight: 10 },
   legendText: { flex: 1, fontSize: 14, color: '#374151' },
