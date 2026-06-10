@@ -899,6 +899,32 @@ export default function App() {
     ]);
   };
 
+  const resetAll = () => {
+    Alert.alert(
+      'Reset all data',
+      'This erases all parents, children, colors, and entries, and reopens the setup wizard. This cannot be undone.',
+      [
+        { text: 'Cancel' },
+        {
+          text: 'Reset', style: 'destructive', onPress: async () => {
+            try { await AsyncStorage.removeItem(STORAGE_KEY); } catch (e) {}
+            setParents([]);
+            setChildren([]);
+            setParentColors({});
+            setChildColors({});
+            setEntries([{ id: generateId(), parent: '', beginDate: '', endDate: '', childrenPresent: {}, note: '' }]);
+            setReportingMode('custom');
+            setCustomStart('');
+            setCustomEnd('');
+            setAnalysisChild('all');
+            setViewMode('list');
+            setShowWizard(true);
+          },
+        },
+      ]
+    );
+  };
+
   const runScheduleGenerator = () => {
     let newEntries = [];
     if (schedulePattern === 'eow' || schedulePattern === 'eow-midweek') {
@@ -1196,6 +1222,10 @@ export default function App() {
                     <Text style={styles.btnText}>Add</Text>
                   </TouchableOpacity>
                 </View>
+
+                <TouchableOpacity style={[styles.btnDanger, { marginTop: 20, alignSelf: 'flex-start' }]} onPress={resetAll}>
+                  <Text style={styles.btnText}>Reset all data</Text>
+                </TouchableOpacity>
               </View>
             )}
           </View>
