@@ -71,10 +71,11 @@ function addDays(dateStr, n) {
 // Which parent has custody on the calendar day `dateStr`? An entry [begin,end]
 // covers every day from begin to end inclusive. Days not covered by any entry
 // are unassigned (shown gray on the calendar).
-function getDayOwner(dateStr, entries) {
+function getDayOwner(dateStr, entries, childFilter) {
   const owners = [];
   for (const e of entries) {
     if (!e.beginDate || !e.endDate || !e.parent) continue;
+    if (childFilter && !(e.childrenPresent && e.childrenPresent[childFilter])) continue;
     if (dateStr >= e.beginDate && dateStr <= e.endDate) owners.push(e.parent);
   }
   const distinct = [...new Set(owners)];
@@ -245,12 +246,13 @@ function generate223(parent1, parent2, startDateStr, endDateStr, childrenList) {
 
 // ── CalendarView ──────────────────────────────────────────────────────────────
 
-function CalendarView({ entries, parents, parentColors, onCreateEntry }) {
+function CalendarView({ entries, parents, parentColors, children, childColors, onCreateEntry }) {
   const now = new Date();
   const [viewYear, setViewYear] = useState(now.getFullYear());
   const [viewMonth, setViewMonth] = useState(now.getMonth());
   const [pendingStart, setPendingStart] = useState(null);
   const [pendingRange, setPendingRange] = useState(null); // {start, end} awaiting parent
+  const [childFilter, setChildFilter] = useState(null); // null = all children
 
   const todayStr = localTodayStr();
 
@@ -285,7 +287,7 @@ function CalendarView({ entries, parents, parentColors, onCreateEntry }) {
   let hasConflict = false;
   for (let day = 1; day <= daysInMonth; day++) {
     const ds = `${viewYear}-${pad2(viewMonth + 1)}-${pad2(day)}`;
-    const owner = getDayOwner(ds, entries);
+    const owner = getDayOwner(ds, entries, childFilter);
     if (owner.conflict) hasConflict = true;
     if (owner.parent) monthTally[owner.parent] = (monthTally[owner.parent] || 0) + 1;
   }
@@ -313,6 +315,30 @@ function CalendarView({ entries, parents, parentColors, onCreateEntry }) {
 
         <Text style={styles.calSelectHint}>{hint}</Text>
 
+        {children && children.length > 1 && (
+          <View style={[styles.chipRow, { justifyContent: 'center', marginBottom: 10 }]}>
+            <TouchableOpacity
+              style={[styles.chip, childFilter === null && { backgroundColor: '#111827', borderColor: '#111827' }]}
+              onPress={() => setChildFilter(null)}
+            >
+              <Text style={[styles.chipText, childFilter === null && styles.chipTextActive]}>All children</Text>
+            </TouchableOpacity>
+            {children.map((c) => {
+              const active = childFilter === c;
+              const cc = colorForName(c, children, childColors);
+              return (
+                <TouchableOpacity
+                  key={c}
+                  style={[styles.chip, active && { backgroundColor: cc, borderColor: cc }]}
+                  onPress={() => setChildFilter(c)}
+                >
+                  <Text style={[styles.chipText, active && styles.chipTextActive]}>{c}</Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        )}
+
         <View style={styles.calWeekRow}>
           {DAY_NAMES.map((d) => <Text key={d} style={styles.calWeekday}>{d}</Text>)}
         </View>
@@ -322,7 +348,7 @@ function CalendarView({ entries, parents, parentColors, onCreateEntry }) {
           {Array.from({ length: daysInMonth }).map((_, i) => {
             const day = i + 1;
             const ds = `${viewYear}-${pad2(viewMonth + 1)}-${pad2(day)}`;
-            const owner = getDayOwner(ds, entries);
+            const owner = getDayOwner(ds, entries, childFilter);
             const col = owner.parent ? colorFor(owner.parent) : null;
             const isToday = ds === todayStr;
             const selEdge = isSelEdge(ds);
@@ -369,7 +395,7 @@ function CalendarView({ entries, parents, parentColors, onCreateEntry }) {
                     <TouchableOpacity
                       key={p}
                       style={{ backgroundColor: col, paddingHorizontal: 14, paddingVertical: 9, borderRadius: 8 }}
-                      onPress={() => { onCreateEntry(pendingRange.start, pendingRange.end, p); resetSelection(); }}
+                      onPress={() => { onCreateEntry(pendingRange.start, pendingRange.end, p, childFilter); resetSelection(); }}
                     >
                       <Text style={styles.btnText}>{p}{idx === 0 ? ' (Primary)' : ''}</Text>
                     </TouchableOpacity>
@@ -415,6 +441,280 @@ function CalendarView({ entries, parents, parentColors, onCreateEntry }) {
   );
 }
 
+// ── SetupWizard ───────────────────────────────────────────────────────────────
+
+function SetupWizard({ onComplete, onCancel }) {
+  const curYear = new Date().getFullYear();
+  const [step, setStep] = useState(0);
+  const [dParents, setDParents] = useState([]);
+  const [dChildren, setDChildren] = useState([]);
+  const [pName, setPName] = useState('');
+  const [cName, setCName] = useState('');
+  const [assignments, setAssignments] = useState([]);
+
+  const [sPreset, setSPreset] = useState('eow');
+  const [sStart, setSStart] = useState(`${curYear}-01-01`);
+  const [sEnd, setSEnd] = useState(`${curYear}-12-31`);
+  const [sSecondary, setSSecondary] = useState('');
+  const [sP1, setSP1] = useState('');
+  const [sP2, setSP2] = useState('');
+  const [sEOWDay, setSEOWDay] = useState('fri');
+  const [sMidweek, setSMidweek] = useState(3);
+  const [sChildren, setSChildren] = useState([]);
+  const [datePicker, setDatePicker] = useState(null); // { field }
+
+  useEffect(() => { setSChildren(dChildren); }, [dChildren]);
+  useEffect(() => {
+    if (dParents.length) { setSSecondary(dParents[1] || dParents[0]); setSP1(dParents[0]); setSP2(dParents[1] || dParents[0]); }
+  }, [dParents]);
+
+  const presetLabel = (p) => ({
+    'eow': 'Every other weekend (~80/20)',
+    'eow-midweek': 'EOW + midweek (~70/30)',
+    'joint-weekly': 'Alternating weeks (50/50)',
+    '2-2-3': '2-2-3 rotation (50/50)',
+  }[p] || p);
+
+  const addParentW = () => { const n = pName.trim(); if (n && !dParents.includes(n)) { setDParents([...dParents, n]); setPName(''); } };
+  const addChildW = () => { const n = cName.trim(); if (n && !dChildren.includes(n)) { setDChildren([...dChildren, n]); setCName(''); } };
+  const makePrimaryW = (p) => setDParents([p, ...dParents.filter((x) => x !== p)]);
+  const toggleSChild = (c) => setSChildren(sChildren.includes(c) ? sChildren.filter((x) => x !== c) : [...sChildren, c]);
+
+  const addAssignment = () => {
+    if (!sStart || !sEnd) { Alert.alert('Missing dates', 'Please set a date range.'); return; }
+    if (sChildren.length === 0) { Alert.alert('No children', 'Select at least one child for this schedule.'); return; }
+    let extra;
+    if (sPreset === 'eow' || sPreset === 'eow-midweek') {
+      if (!sSecondary) { Alert.alert('Missing parent', 'Select the parent who gets the weekends.'); return; }
+      extra = { secondary: sSecondary };
+    } else {
+      if (!sP1 || !sP2) { Alert.alert('Missing parents', 'Select both parents.'); return; }
+      extra = { p1: sP1, p2: sP2 };
+    }
+    setAssignments([...assignments, { id: generateId(), preset: sPreset, start: sStart, end: sEnd, eowDay: sEOWDay, midweek: sMidweek, children: [...sChildren], ...extra }]);
+    setSChildren(dChildren);
+  };
+
+  const finish = () => {
+    const parentColors = {}; dParents.forEach((p) => { parentColors[p] = nextColor(parentColors); });
+    const childColors = {}; dChildren.forEach((c) => { childColors[c] = nextColor(childColors); });
+    let entries = [];
+    assignments.forEach((a) => {
+      let gen = [];
+      if (a.preset === 'eow') gen = generateEOWSchedule(a.secondary, a.start, a.end, a.children, a.eowDay);
+      else if (a.preset === 'eow-midweek') gen = generateEOWMidweek(a.secondary, a.start, a.end, a.children, a.eowDay, a.midweek);
+      else if (a.preset === 'joint-weekly') gen = generateJointWeeklySchedule(a.p1, a.p2, a.start, a.end, a.children);
+      else if (a.preset === '2-2-3') gen = generate223(a.p1, a.p2, a.start, a.end, a.children);
+      entries = entries.concat(gen);
+    });
+    if (entries.length === 0) {
+      const cp = {}; dChildren.forEach((c) => { cp[c] = true; });
+      entries = [{ id: generateId(), parent: '', beginDate: '', endDate: '', childrenPresent: cp, note: '' }];
+    }
+    onComplete({ parents: dParents, parentColors, children: dChildren, childColors, entries });
+  };
+
+  const onDate = (_e, d) => {
+    if (!d) { setDatePicker(null); return; }
+    const ds = formatDateStr(d);
+    if (datePicker.field === 'start') setSStart(ds); else setSEnd(ds);
+    setDatePicker(null);
+  };
+
+  const canNext = step === 0 ? dParents.length >= 1 : step === 1 ? dChildren.length >= 1 : true;
+  const ParentChips = ({ value, onPick }) => (
+    <View style={styles.chipRow}>
+      {dParents.map((p) => (
+        <TouchableOpacity key={p} style={[styles.chip, value === p && styles.chipActive]} onPress={() => onPick(p)}>
+          <Text style={[styles.chipText, value === p && styles.chipTextActive]}>{p}</Text>
+        </TouchableOpacity>
+      ))}
+    </View>
+  );
+
+  return (
+    <Modal visible transparent animationType="slide" onRequestClose={onCancel}>
+      <View style={styles.modalOverlay}>
+        <View style={[styles.modalBox, { maxHeight: '92%' }]}>
+          <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ padding: 16 }}>
+            {/* progress */}
+            <View style={{ flexDirection: 'row', gap: 6, marginBottom: 16 }}>
+              {['Parents', 'Children', 'Schedules', 'Review'].map((label, i) => (
+                <View key={label} style={{ flex: 1 }}>
+                  <View style={{ height: 6, borderRadius: 3, backgroundColor: i <= step ? '#2563eb' : '#e5e7eb', marginBottom: 4 }} />
+                  <Text style={{ fontSize: 10, textAlign: 'center', color: i === step ? '#111827' : '#9ca3af', fontWeight: i === step ? '700' : '400' }}>{label}</Text>
+                </View>
+              ))}
+            </View>
+
+            {step === 0 && (
+              <View>
+                <Text style={styles.wizTitle}>Who are the parents?</Text>
+                <Text style={styles.wizSub}>Add each parent. The first is the “primary” — the default custodian used for reporting. Tap ☆ to change who is primary.</Text>
+                {dParents.map((p, i) => (
+                  <View key={p} style={styles.wizRow}>
+                    <Text style={styles.wizRowText}>{p}{i === 0 ? '  (Primary)' : ''}</Text>
+                    {i !== 0 && <TouchableOpacity onPress={() => makePrimaryW(p)}><Text style={styles.tagStar}>☆</Text></TouchableOpacity>}
+                    <TouchableOpacity onPress={() => setDParents(dParents.filter((x) => x !== p))}><Text style={styles.tagX}>×</Text></TouchableOpacity>
+                  </View>
+                ))}
+                <View style={styles.inputRow}>
+                  <TextInput style={[styles.input, { flex: 1 }]} value={pName} onChangeText={setPName} placeholder="Parent name" onSubmitEditing={addParentW} returnKeyType="done" autoCapitalize="words" />
+                  <TouchableOpacity style={styles.btnPrimary} onPress={addParentW}><Text style={styles.btnText}>Add</Text></TouchableOpacity>
+                </View>
+              </View>
+            )}
+
+            {step === 1 && (
+              <View>
+                <Text style={styles.wizTitle}>Who are the children?</Text>
+                <Text style={styles.wizSub}>Add each child. Next you can give different children different schedules.</Text>
+                {dChildren.map((c) => (
+                  <View key={c} style={styles.wizRow}>
+                    <Text style={styles.wizRowText}>{c}</Text>
+                    <TouchableOpacity onPress={() => setDChildren(dChildren.filter((x) => x !== c))}><Text style={styles.tagX}>×</Text></TouchableOpacity>
+                  </View>
+                ))}
+                <View style={styles.inputRow}>
+                  <TextInput style={[styles.input, { flex: 1 }]} value={cName} onChangeText={setCName} placeholder="Child name" onSubmitEditing={addChildW} returnKeyType="done" autoCapitalize="words" />
+                  <TouchableOpacity style={styles.btnPrimary} onPress={addChildW}><Text style={styles.btnText}>Add</Text></TouchableOpacity>
+                </View>
+              </View>
+            )}
+
+            {step === 2 && (
+              <View>
+                <Text style={styles.wizTitle}>Set up schedules</Text>
+                <Text style={styles.wizSub}>Pick a schedule and which children it covers. Different kids can have different plans — add more than one. You can also skip and fill in the calendar by hand.</Text>
+
+                {assignments.map((a) => (
+                  <View key={a.id} style={styles.assignRow}>
+                    <Text style={styles.assignText}>{presetLabel(a.preset)} · {a.children.join(', ')}</Text>
+                    <TouchableOpacity onPress={() => setAssignments(assignments.filter((x) => x.id !== a.id))}><Text style={styles.tagX}>×</Text></TouchableOpacity>
+                  </View>
+                ))}
+
+                <View style={[styles.card, { padding: 12, marginTop: 8 }]}>
+                  <Text style={styles.fieldLabel}>Pattern</Text>
+                  <View style={styles.chipRow}>
+                    {['eow', 'eow-midweek', 'joint-weekly', '2-2-3'].map((v) => (
+                      <TouchableOpacity key={v} style={[styles.chip, sPreset === v && styles.chipActive]} onPress={() => setSPreset(v)}>
+                        <Text style={[styles.chipText, sPreset === v && styles.chipTextActive]}>{presetLabel(v)}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+
+                  <Text style={[styles.fieldLabel, { marginTop: 10 }]}>Date Range</Text>
+                  <View style={styles.dateRow}>
+                    <TouchableOpacity style={[styles.dateBtn, { flex: 1 }]} onPress={() => setDatePicker({ field: 'start' })}>
+                      <Text style={styles.dateBtnText}>{displayDate(sStart)}</Text>
+                    </TouchableOpacity>
+                    <Text style={styles.dateSep}>→</Text>
+                    <TouchableOpacity style={[styles.dateBtn, { flex: 1 }]} onPress={() => setDatePicker({ field: 'end' })}>
+                      <Text style={styles.dateBtnText}>{displayDate(sEnd)}</Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  {(sPreset === 'eow' || sPreset === 'eow-midweek') && (
+                    <View>
+                      <Text style={[styles.fieldLabel, { marginTop: 10 }]}>Parent who gets the weekends</Text>
+                      <ParentChips value={sSecondary} onPick={setSSecondary} />
+                      <Text style={[styles.fieldLabel, { marginTop: 8 }]}>Weekend starts on</Text>
+                      <View style={styles.chipRow}>
+                        {[{ v: 'fri', l: 'Friday' }, { v: 'sat', l: 'Saturday' }].map((o) => (
+                          <TouchableOpacity key={o.v} style={[styles.chip, sEOWDay === o.v && styles.chipActive]} onPress={() => setSEOWDay(o.v)}>
+                            <Text style={[styles.chipText, sEOWDay === o.v && styles.chipTextActive]}>{o.l}</Text>
+                          </TouchableOpacity>
+                        ))}
+                      </View>
+                      {sPreset === 'eow-midweek' && (
+                        <View>
+                          <Text style={[styles.fieldLabel, { marginTop: 8 }]}>Midweek overnight</Text>
+                          <View style={styles.chipRow}>
+                            {[{ d: 1, l: 'Mon' }, { d: 2, l: 'Tue' }, { d: 3, l: 'Wed' }, { d: 4, l: 'Thu' }].map((o) => (
+                              <TouchableOpacity key={o.d} style={[styles.chip, sMidweek === o.d && styles.chipActive]} onPress={() => setSMidweek(o.d)}>
+                                <Text style={[styles.chipText, sMidweek === o.d && styles.chipTextActive]}>{o.l}</Text>
+                              </TouchableOpacity>
+                            ))}
+                          </View>
+                        </View>
+                      )}
+                    </View>
+                  )}
+
+                  {(sPreset === 'joint-weekly' || sPreset === '2-2-3') && (
+                    <View>
+                      <Text style={[styles.fieldLabel, { marginTop: 10 }]}>{sPreset === '2-2-3' ? 'First parent (starts cycle)' : 'Parent — Week 1'}</Text>
+                      <ParentChips value={sP1} onPick={setSP1} />
+                      <Text style={[styles.fieldLabel, { marginTop: 8 }]}>{sPreset === '2-2-3' ? 'Second parent' : 'Parent — Week 2'}</Text>
+                      <ParentChips value={sP2} onPick={setSP2} />
+                    </View>
+                  )}
+
+                  <Text style={[styles.fieldLabel, { marginTop: 10 }]}>Applies to children</Text>
+                  <View style={styles.chipRow}>
+                    {dChildren.map((c) => {
+                      const on = sChildren.includes(c);
+                      return (
+                        <TouchableOpacity key={c} style={[styles.chip, on && styles.chipActive]} onPress={() => toggleSChild(c)}>
+                          <Text style={[styles.chipText, on && styles.chipTextActive]}>{on ? '✓ ' : ''}{c}</Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+
+                  <TouchableOpacity style={[styles.btnSuccess, { marginTop: 12, alignSelf: 'flex-start' }]} onPress={addAssignment}>
+                    <Text style={styles.btnText}>+ Add this schedule</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )}
+
+            {step === 3 && (
+              <View>
+                <Text style={styles.wizTitle}>Review</Text>
+                <Text style={styles.wizReview}><Text style={{ fontWeight: '700' }}>Parents: </Text>{dParents.map((p, i) => p + (i === 0 ? ' (Primary)' : '')).join(', ') || '—'}</Text>
+                <Text style={styles.wizReview}><Text style={{ fontWeight: '700' }}>Children: </Text>{dChildren.join(', ') || '—'}</Text>
+                <Text style={[styles.wizReview, { fontWeight: '700' }]}>Schedules:</Text>
+                {assignments.length === 0 ? (
+                  <Text style={styles.wizSub}>None — you'll start with a blank calendar to fill in manually.</Text>
+                ) : assignments.map((a) => (
+                  <Text key={a.id} style={styles.wizReview}>• {presetLabel(a.preset)} for {a.children.join(', ')}</Text>
+                ))}
+                <Text style={[styles.wizSub, { marginTop: 12 }]}>Creating will set up your calendar. You can still edit everything afterward.</Text>
+              </View>
+            )}
+
+            {/* nav */}
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 20 }}>
+              <TouchableOpacity style={{ backgroundColor: '#6b7280', paddingHorizontal: 14, paddingVertical: 9, borderRadius: 8 }} onPress={step === 0 ? onCancel : () => setStep(step - 1)}>
+                <Text style={styles.btnText}>{step === 0 ? 'Cancel' : 'Back'}</Text>
+              </TouchableOpacity>
+              {step < 3 ? (
+                <TouchableOpacity style={[styles.btnPrimary, !canNext && { opacity: 0.5 }]} disabled={!canNext} onPress={() => setStep(step + 1)}>
+                  <Text style={styles.btnText}>Next</Text>
+                </TouchableOpacity>
+              ) : (
+                <TouchableOpacity style={styles.btnSuccess} onPress={finish}>
+                  <Text style={styles.btnText}>Create Calendar</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          </ScrollView>
+          {datePicker && (
+            <DateTimePicker
+              value={toDate(datePicker.field === 'start' ? sStart : sEnd) || new Date()}
+              mode="date"
+              display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+              onChange={onDate}
+            />
+          )}
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
 // ── App ───────────────────────────────────────────────────────────────────────
 
 export default function App() {
@@ -443,6 +743,7 @@ export default function App() {
 
   // UI state
   const [viewMode, setViewMode] = useState('list'); // 'list' | 'calendar'
+  const [showWizard, setShowWizard] = useState(false);
   const [datePicker, setDatePicker] = useState(null); // { context, field, current }
   const [parentPickerEntryId, setParentPickerEntryId] = useState(null);
 
@@ -480,9 +781,21 @@ export default function App() {
         if (data.preset) setPreset(data.preset);
         if (data.analysisChild) setAnalysisChild(data.analysisChild);
       }
+      // Auto-open the setup wizard on a fresh install (no parents saved yet).
+      if (!data || !data.parents || data.parents.length === 0) setShowWizard(true);
       setLoaded(true);
     });
   }, []);
+
+  const completeWizard = ({ parents: wp, parentColors: wpc, children: wc, childColors: wcc, entries: we }) => {
+    setParents(wp);
+    setParentColors(wpc);
+    setChildren(wc);
+    setChildColors(wcc);
+    setEntries(we);
+    setShowWizard(false);
+    setViewMode('calendar');
+  };
 
   useEffect(() => {
     if (!loaded) return;
@@ -558,9 +871,9 @@ export default function App() {
     setEntries([...entries, { id: generateId(), parent: '', beginDate: '', endDate: '', childrenPresent: cp, note: '' }]);
   };
 
-  const createEntryFromCalendar = (start, end, parent) => {
+  const createEntryFromCalendar = (start, end, parent, childFilter) => {
     const cp = {};
-    children.forEach((c) => { cp[c] = true; });
+    children.forEach((c) => { cp[c] = childFilter ? c === childFilter : true; });
     setEntries([...entries, { id: generateId(), parent, beginDate: start, endDate: end, childrenPresent: cp, note: '' }]);
   };
 
@@ -781,6 +1094,7 @@ export default function App() {
   return (
     <SafeAreaView style={styles.safeArea}>
       <StatusBar barStyle="dark-content" backgroundColor="#f9fafb" />
+      {showWizard && <SetupWizard onComplete={completeWizard} onCancel={() => setShowWizard(false)} />}
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <ScrollView style={styles.scroll} contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
 
@@ -806,7 +1120,7 @@ export default function App() {
           </View>
 
           {viewMode === 'calendar' ? (
-            <CalendarView entries={entries} parents={parents} parentColors={parentColors} onCreateEntry={createEntryFromCalendar} />
+            <CalendarView entries={entries} parents={parents} parentColors={parentColors} children={children} childColors={childColors} onCreateEntry={createEntryFromCalendar} />
           ) : (
           <>
           {/* Configuration */}
@@ -888,6 +1202,9 @@ export default function App() {
 
           {/* Actions */}
           <View style={styles.actionRow}>
+            <TouchableOpacity style={{ backgroundColor: '#6b7280', paddingHorizontal: 14, paddingVertical: 9, borderRadius: 8 }} onPress={() => setShowWizard(true)}>
+              <Text style={styles.btnText}>🧭 Setup</Text>
+            </TouchableOpacity>
             <TouchableOpacity style={styles.btnPrimary} onPress={addRow}>
               <Text style={styles.btnText}>+ Add Entry</Text>
             </TouchableOpacity>
@@ -1404,6 +1721,13 @@ const styles = StyleSheet.create({
   swatchGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, padding: 16 },
   swatchChoice: { width: 36, height: 36, borderRadius: 18, borderWidth: 2, borderColor: '#e5e7eb' },
   swatchChoiceSelected: { borderColor: '#111827', borderWidth: 3 },
+  wizTitle: { fontSize: 20, fontWeight: '700', color: '#111827', marginBottom: 6 },
+  wizSub: { fontSize: 13, color: '#6b7280', marginBottom: 14, lineHeight: 18 },
+  wizRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#f3f4f6', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10, marginBottom: 8 },
+  wizRowText: { flex: 1, fontSize: 15, color: '#111827' },
+  wizReview: { fontSize: 14, color: '#374151', marginBottom: 6, lineHeight: 20 },
+  assignRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#eff6ff', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 8, marginBottom: 6 },
+  assignText: { flex: 1, fontSize: 13, color: '#1d4ed8' },
   tagXDisabled: { color: '#d1d5db' },
 
   inputRow: { flexDirection: 'row', gap: 8, alignItems: 'center' },
