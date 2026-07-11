@@ -1,13 +1,15 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, ScrollView, Switch,
-  Modal, Alert, StyleSheet, SafeAreaView, StatusBar, Platform,
+  Modal, Alert, StyleSheet, StatusBar, Platform,
   KeyboardAvoidingView,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
+const { computeCustodySummary, getCalendarDayState } = require('./custody-engine');
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -23,7 +25,7 @@ function toDate(d) {
 
 function formatDateStr(date) {
   if (!date) return '';
-  return date.toISOString().split('T')[0];
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
 
 function displayDate(dateStr) {
@@ -39,20 +41,6 @@ function daysInclusive(start, end) {
   return Math.floor((e - s) / 86400000) + 1;
 }
 
-function nightsInclusive(start, end) {
-  const d = daysInclusive(start, end);
-  return d === null ? null : Math.max(0, d - 1);
-}
-
-function overlapDays(a0, a1, b0, b1) {
-  const aS = toDate(a0), aE = toDate(a1), bS = toDate(b0), bE = toDate(b1);
-  if (!aS || !aE || !bS || !bE) return 0;
-  const oS = new Date(Math.max(aS, bS));
-  const oE = new Date(Math.min(aE, bE));
-  if (oS > oE) return 0;
-  return Math.floor((oE - oS) / 86400000) + 1;
-}
-
 // Local-time-safe date helpers (avoid UTC shift from toISOString)
 function pad2(n) { return String(n).padStart(2, '0'); }
 
@@ -66,22 +54,6 @@ function addDays(dateStr, n) {
   const dt = new Date(y, m - 1, d);
   dt.setDate(dt.getDate() + n);
   return `${dt.getFullYear()}-${pad2(dt.getMonth() + 1)}-${pad2(dt.getDate())}`;
-}
-
-// Which parent has custody on the calendar day `dateStr`? An entry [begin,end]
-// covers every day from begin to end inclusive. Days not covered by any entry
-// are unassigned (shown gray on the calendar).
-function getDayOwner(dateStr, entries, childFilter) {
-  const owners = [];
-  for (const e of entries) {
-    if (!e.beginDate || !e.endDate || !e.parent) continue;
-    if (childFilter && !(e.childrenPresent && e.childrenPresent[childFilter])) continue;
-    if (dateStr >= e.beginDate && dateStr <= e.endDate) owners.push(e.parent);
-  }
-  const distinct = [...new Set(owners)];
-  if (distinct.length === 0) return { parent: null, conflict: false };
-  if (distinct.length === 1) return { parent: distinct[0], conflict: false };
-  return { parent: distinct[0], conflict: true };
 }
 
 const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
@@ -151,8 +123,8 @@ function generateEOWSchedule(secondaryParent, startDateStr, endDateStr, children
         entries.push({
           id: generateId(),
           parent: secondaryParent,
-          beginDate: actualStart.toISOString().split('T')[0],
-          endDate: actualEnd.toISOString().split('T')[0],
+          beginDate: formatDateStr(actualStart),
+          endDate: formatDateStr(actualEnd),
           childrenPresent: cp,
           note: 'EOW',
         });
@@ -186,8 +158,8 @@ function generateJointWeeklySchedule(parent1, parent2, startDateStr, endDateStr,
       entries.push({
         id: generateId(),
         parent,
-        beginDate: actualStart.toISOString().split('T')[0],
-        endDate: actualEnd.toISOString().split('T')[0],
+        beginDate: formatDateStr(actualStart),
+        endDate: formatDateStr(actualEnd),
         childrenPresent: cp,
         note: `Week ${weekNum + 1}`,
       });
@@ -263,12 +235,10 @@ function CalendarView({ entries, parents, parentColors, children, childColors, o
 
   const resetSelection = () => { setPendingStart(null); setPendingRange(null); };
   const prevMonth = () => {
-    resetSelection();
     if (viewMonth === 0) { setViewMonth(11); setViewYear((y) => y - 1); }
     else setViewMonth((m) => m - 1);
   };
   const nextMonth = () => {
-    resetSelection();
     if (viewMonth === 11) { setViewMonth(0); setViewYear((y) => y + 1); }
     else setViewMonth((m) => m + 1);
   };
@@ -285,11 +255,17 @@ function CalendarView({ entries, parents, parentColors, children, childColors, o
   // Days-per-parent tally for the displayed month
   const monthTally = {};
   let hasConflict = false;
+  let hasSplit = false;
   for (let day = 1; day <= daysInMonth; day++) {
     const ds = `${viewYear}-${pad2(viewMonth + 1)}-${pad2(day)}`;
-    const owner = getDayOwner(ds, entries, childFilter);
-    if (owner.conflict) hasConflict = true;
-    if (owner.parent) monthTally[owner.parent] = (monthTally[owner.parent] || 0) + 1;
+    const state = getCalendarDayState(ds, entries, children, childFilter);
+    if (state.type === 'conflict') hasConflict = true;
+    if (state.type === 'split') hasSplit = true;
+    state.childStates.forEach((childState) => {
+      if (childState.type === 'single') {
+        monthTally[childState.parent] = (monthTally[childState.parent] || 0) + 1;
+      }
+    });
   }
 
   const isSelEdge = (ds) => ds === pendingStart || (pendingRange && (ds === pendingRange.start || ds === pendingRange.end));
@@ -304,11 +280,11 @@ function CalendarView({ entries, parents, parentColors, children, childColors, o
       {/* Calendar grid */}
       <View style={styles.card}>
         <View style={styles.calNav}>
-          <TouchableOpacity onPress={prevMonth} style={styles.calNavBtn}>
+          <TouchableOpacity onPress={prevMonth} style={styles.calNavBtn} accessibilityRole="button" accessibilityLabel="Previous month">
             <Text style={styles.calNavArrow}>‹</Text>
           </TouchableOpacity>
           <Text style={styles.calNavTitle}>{MONTH_NAMES[viewMonth]} {viewYear}</Text>
-          <TouchableOpacity onPress={nextMonth} style={styles.calNavBtn}>
+          <TouchableOpacity onPress={nextMonth} style={styles.calNavBtn} accessibilityRole="button" accessibilityLabel="Next month">
             <Text style={styles.calNavArrow}>›</Text>
           </TouchableOpacity>
         </View>
@@ -320,6 +296,8 @@ function CalendarView({ entries, parents, parentColors, children, childColors, o
             <TouchableOpacity
               style={[styles.chip, childFilter === null && { backgroundColor: '#111827', borderColor: '#111827' }]}
               onPress={() => setChildFilter(null)}
+              accessibilityRole="button"
+              accessibilityState={{ selected: childFilter === null }}
             >
               <Text style={[styles.chipText, childFilter === null && styles.chipTextActive]}>All children</Text>
             </TouchableOpacity>
@@ -331,6 +309,8 @@ function CalendarView({ entries, parents, parentColors, children, childColors, o
                   key={c}
                   style={[styles.chip, active && { backgroundColor: cc, borderColor: cc }]}
                   onPress={() => setChildFilter(c)}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: active }}
                 >
                   <Text style={[styles.chipText, active && styles.chipTextActive]}>{c}</Text>
                 </TouchableOpacity>
@@ -348,8 +328,8 @@ function CalendarView({ entries, parents, parentColors, children, childColors, o
           {Array.from({ length: daysInMonth }).map((_, i) => {
             const day = i + 1;
             const ds = `${viewYear}-${pad2(viewMonth + 1)}-${pad2(day)}`;
-            const owner = getDayOwner(ds, entries, childFilter);
-            const col = owner.parent ? colorFor(owner.parent) : null;
+            const state = getCalendarDayState(ds, entries, children, childFilter);
+            const col = state.type === 'single' ? colorFor(state.parent) : null;
             const isToday = ds === todayStr;
             const selEdge = isSelEdge(ds);
             const inRange = inPendingRange(ds);
@@ -357,17 +337,39 @@ function CalendarView({ entries, parents, parentColors, children, childColors, o
               ? { borderColor: '#2563eb', borderWidth: 3 }
               : inRange
                 ? { borderColor: '#93c5fd', borderWidth: 2 }
-                : owner.conflict
+                : state.type === 'conflict'
                   ? { borderColor: '#dc2626', borderWidth: 2, borderStyle: 'dashed' }
                   : null;
             return (
-              <TouchableOpacity key={day} style={styles.calCell} activeOpacity={0.6} onPress={() => handleDayClick(ds)}>
+              <TouchableOpacity
+                key={day}
+                style={styles.calCell}
+                activeOpacity={0.6}
+                onPress={() => handleDayClick(ds)}
+                accessibilityRole="button"
+                accessibilityLabel={`${displayDate(ds)}${state.type === 'split' ? ', children have different schedules' : state.type === 'conflict' ? ', conflicting entries' : state.parent ? `, ${state.parent}` : ', unassigned'}`}
+              >
                 <View style={[
                   styles.calDay,
                   { backgroundColor: col || '#e5e7eb' },
                   borderStyle,
                 ]}>
-                  <Text style={[styles.calDayNum, { color: col ? '#fff' : '#9ca3af' }, isToday && styles.calDayToday]}>{day}</Text>
+                  {state.type === 'split' && (
+                    <View style={styles.calSplitFill}>
+                      {state.childStates.map((childState, index) => (
+                        <View
+                          key={childState.child || index}
+                          style={{ flex: 1, backgroundColor: childState.parent ? colorFor(childState.parent) : '#e5e7eb' }}
+                        />
+                      ))}
+                    </View>
+                  )}
+                  <Text style={[
+                    styles.calDayNum,
+                    { color: (col || state.type === 'split') ? '#fff' : '#9ca3af' },
+                    state.type === 'split' && styles.calDayNumOverlay,
+                    isToday && styles.calDayToday,
+                  ]}>{day}</Text>
                 </View>
               </TouchableOpacity>
             );
@@ -381,7 +383,7 @@ function CalendarView({ entries, parents, parentColors, children, childColors, o
           <Text style={styles.sectionTitle}>New custody period</Text>
           <Text style={styles.windowInfo}>
             {displayDate(pendingRange.start)} – {displayDate(pendingRange.end)}
-            {'  ·  '}{daysInclusive(pendingRange.start, pendingRange.end)} days, {nightsInclusive(pendingRange.start, pendingRange.end)} nights
+            {'  ·  '}{daysInclusive(pendingRange.start, pendingRange.end)} custody day(s)
           </Text>
           {parents.length === 0 ? (
             <Text style={styles.modalEmpty}>Add parents in the Entries tab first, then you can assign custody.</Text>
@@ -412,7 +414,7 @@ function CalendarView({ entries, parents, parentColors, children, childColors, o
 
       {/* Legend + month tally */}
       <View style={styles.card}>
-        <Text style={styles.fieldLabel}>Legend · days this month</Text>
+        <Text style={styles.fieldLabel}>Legend · {!childFilter && children.length > 1 ? 'child-days' : 'custody days'} this month</Text>
         {parents.length === 0 && (
           <Text style={styles.modalEmpty}>Add parents in the Entries tab to color the calendar.</Text>
         )}
@@ -422,7 +424,7 @@ function CalendarView({ entries, parents, parentColors, children, childColors, o
             <View key={p} style={styles.legendRow}>
               <View style={[styles.legendSwatch, { backgroundColor: col }]} />
               <Text style={styles.legendText}>{p}{idx === 0 ? ' (Primary)' : ''}</Text>
-              <Text style={styles.legendCount}>{monthTally[p] || 0} days</Text>
+              <Text style={styles.legendCount}>{monthTally[p] || 0}</Text>
             </View>
           );
         })}
@@ -431,10 +433,13 @@ function CalendarView({ entries, parents, parentColors, children, childColors, o
           <Text style={styles.legendText}>No custody entry</Text>
         </View>
         {hasConflict && (
-          <Text style={styles.calConflictNote}>⚠ Some days have conflicting entries (outlined in red).</Text>
+          <Text style={styles.calConflictNote}>Some children are assigned to two parents on the same day (red outline).</Text>
+        )}
+        {hasSplit && !childFilter && (
+          <Text style={styles.calSplitNote}>Split-color days mean the children have different schedules.</Text>
         )}
         <Text style={styles.calHint}>
-          Each day is colored by the parent who has custody. Days with no custody entry are gray.
+          Choose a child to see one schedule. Gray means no explicit entry; reporting credits unassigned days to the primary parent.
         </Text>
       </View>
     </View>
@@ -443,14 +448,14 @@ function CalendarView({ entries, parents, parentColors, children, childColors, o
 
 // ── SetupWizard ───────────────────────────────────────────────────────────────
 
-function SetupWizard({ onComplete, onCancel }) {
+function SetupWizard({ initialData, onComplete, onCancel }) {
   const curYear = new Date().getFullYear();
   const [step, setStep] = useState(0);
-  const [dParents, setDParents] = useState([]);
-  const [dChildren, setDChildren] = useState([]);
+  const [dParents, setDParents] = useState(initialData.parents || []);
+  const [dChildren, setDChildren] = useState(initialData.children || []);
   const [pName, setPName] = useState('');
   const [cName, setCName] = useState('');
-  const [assignments, setAssignments] = useState([]);
+  const [assignments, setAssignments] = useState(initialData.scheduleAssignments || []);
 
   const [sPreset, setSPreset] = useState('eow');
   const [sStart, setSStart] = useState(`${curYear}-01-01`);
@@ -463,9 +468,18 @@ function SetupWizard({ onComplete, onCancel }) {
   const [sChildren, setSChildren] = useState([]);
   const [datePicker, setDatePicker] = useState(null); // { field }
 
-  useEffect(() => { setSChildren(dChildren); }, [dChildren]);
   useEffect(() => {
-    if (dParents.length) { setSSecondary(dParents[1] || dParents[0]); setSP1(dParents[0]); setSP2(dParents[1] || dParents[0]); }
+    setSChildren((selected) => selected.length ? selected.filter((child) => dChildren.includes(child)) : dChildren);
+    setAssignments((current) => current
+      .map((assignment) => ({ ...assignment, children: assignment.children.filter((child) => dChildren.includes(child)) }))
+      .filter((assignment) => assignment.children.length));
+  }, [dChildren]);
+  useEffect(() => {
+    if (dParents.length) {
+      setSSecondary((value) => dParents.includes(value) && value !== dParents[0] ? value : (dParents[1] || ''));
+      setSP1((value) => dParents.includes(value) ? value : dParents[0]);
+      setSP2((value) => dParents.includes(value) && value !== dParents[0] ? value : (dParents[1] || ''));
+    }
   }, [dParents]);
 
   const presetLabel = (p) => ({
@@ -479,16 +493,34 @@ function SetupWizard({ onComplete, onCancel }) {
   const addChildW = () => { const n = cName.trim(); if (n && !dChildren.includes(n)) { setDChildren([...dChildren, n]); setCName(''); } };
   const makePrimaryW = (p) => setDParents([p, ...dParents.filter((x) => x !== p)]);
   const toggleSChild = (c) => setSChildren(sChildren.includes(c) ? sChildren.filter((x) => x !== c) : [...sChildren, c]);
+  const assignmentIsValid = (assignment) => {
+    if (!assignment.start || !assignment.end || assignment.start > assignment.end || !assignment.children.length) return false;
+    if (assignment.preset === 'eow' || assignment.preset === 'eow-midweek') {
+      return dParents.includes(assignment.secondary) && assignment.secondary !== dParents[0];
+    }
+    return dParents.includes(assignment.p1) && dParents.includes(assignment.p2) && assignment.p1 !== assignment.p2;
+  };
+
+  const assignmentError = (() => {
+    if (!sStart || !sEnd) return 'Set a start and end date.';
+    if (sStart > sEnd) return 'The end date must be on or after the start date.';
+    if (sChildren.length === 0) return 'Select at least one child.';
+    if (dParents.length < 2) return 'Add two parents before creating a shared schedule.';
+    if ((sPreset === 'eow' || sPreset === 'eow-midweek') && (!sSecondary || sSecondary === dParents[0])) {
+      return 'Choose a non-primary parent for weekends.';
+    }
+    if ((sPreset === 'joint-weekly' || sPreset === '2-2-3') && (!sP1 || !sP2 || sP1 === sP2)) {
+      return 'Choose two different parents.';
+    }
+    return '';
+  })();
 
   const addAssignment = () => {
-    if (!sStart || !sEnd) { Alert.alert('Missing dates', 'Please set a date range.'); return; }
-    if (sChildren.length === 0) { Alert.alert('No children', 'Select at least one child for this schedule.'); return; }
+    if (assignmentError) { Alert.alert('Schedule needs attention', assignmentError); return; }
     let extra;
     if (sPreset === 'eow' || sPreset === 'eow-midweek') {
-      if (!sSecondary) { Alert.alert('Missing parent', 'Select the parent who gets the weekends.'); return; }
       extra = { secondary: sSecondary };
     } else {
-      if (!sP1 || !sP2) { Alert.alert('Missing parents', 'Select both parents.'); return; }
       extra = { p1: sP1, p2: sP2 };
     }
     setAssignments([...assignments, { id: generateId(), preset: sPreset, start: sStart, end: sEnd, eowDay: sEOWDay, midweek: sMidweek, children: [...sChildren], ...extra }]);
@@ -496,22 +528,44 @@ function SetupWizard({ onComplete, onCancel }) {
   };
 
   const finish = () => {
-    const parentColors = {}; dParents.forEach((p) => { parentColors[p] = nextColor(parentColors); });
-    const childColors = {}; dChildren.forEach((c) => { childColors[c] = nextColor(childColors); });
-    let entries = [];
+    if (assignments.some((assignment) => !assignmentIsValid(assignment))) {
+      Alert.alert('Review schedules', 'One or more schedules no longer match the selected parents or dates. Remove and recreate the highlighted schedule before continuing.');
+      return;
+    }
+    const parentColors = {};
+    dParents.forEach((parent) => { parentColors[parent] = initialData.parentColors?.[parent] || nextColor(parentColors); });
+    const childColors = {};
+    dChildren.forEach((child) => { childColors[child] = initialData.childColors?.[child] || nextColor(childColors); });
+    let generatedEntries = [];
     assignments.forEach((a) => {
       let gen = [];
       if (a.preset === 'eow') gen = generateEOWSchedule(a.secondary, a.start, a.end, a.children, a.eowDay);
       else if (a.preset === 'eow-midweek') gen = generateEOWMidweek(a.secondary, a.start, a.end, a.children, a.eowDay, a.midweek);
       else if (a.preset === 'joint-weekly') gen = generateJointWeeklySchedule(a.p1, a.p2, a.start, a.end, a.children);
       else if (a.preset === '2-2-3') gen = generate223(a.p1, a.p2, a.start, a.end, a.children);
-      entries = entries.concat(gen);
+      generatedEntries = generatedEntries.concat(gen.map((entry) => ({ ...entry, scheduleId: a.id })));
     });
+    const manualEntries = (initialData.entries || [])
+      .filter((entry) => !entry.scheduleId)
+      .filter((entry) => entry.parent || entry.beginDate || entry.endDate || entry.note)
+      .filter((entry) => !entry.parent || dParents.includes(entry.parent))
+      .map((entry) => ({
+        ...entry,
+        childrenPresent: Object.fromEntries(dChildren.map((child) => [child, Boolean(entry.childrenPresent?.[child])])),
+      }));
+    let entries = [...manualEntries, ...generatedEntries];
     if (entries.length === 0) {
       const cp = {}; dChildren.forEach((c) => { cp[c] = true; });
       entries = [{ id: generateId(), parent: '', beginDate: '', endDate: '', childrenPresent: cp, note: '' }];
     }
-    onComplete({ parents: dParents, parentColors, children: dChildren, childColors, entries });
+    onComplete({
+      parents: dParents,
+      parentColors,
+      children: dChildren,
+      childColors,
+      entries,
+      scheduleAssignments: assignments,
+    });
   };
 
   const onDate = (_e, d) => {
@@ -588,8 +642,8 @@ function SetupWizard({ onComplete, onCancel }) {
                 <Text style={styles.wizSub}>Pick a schedule and which children it covers. Different kids can have different plans — add more than one. You can also skip and fill in the calendar by hand.</Text>
 
                 {assignments.map((a) => (
-                  <View key={a.id} style={styles.assignRow}>
-                    <Text style={styles.assignText}>{presetLabel(a.preset)} · {a.children.join(', ')}</Text>
+                  <View key={a.id} style={[styles.assignRow, !assignmentIsValid(a) && styles.assignRowInvalid]}>
+                    <Text style={[styles.assignText, !assignmentIsValid(a) && styles.inlineError]}>{presetLabel(a.preset)} · {a.children.join(', ')}{assignmentIsValid(a) ? '' : ' · needs attention'}</Text>
                     <TouchableOpacity onPress={() => setAssignments(assignments.filter((x) => x.id !== a.id))}><Text style={styles.tagX}>×</Text></TouchableOpacity>
                   </View>
                 ))}
@@ -663,7 +717,12 @@ function SetupWizard({ onComplete, onCancel }) {
                     })}
                   </View>
 
-                  <TouchableOpacity style={[styles.btnSuccess, { marginTop: 12, alignSelf: 'flex-start' }]} onPress={addAssignment}>
+                  {assignmentError ? <Text style={styles.inlineError}>{assignmentError}</Text> : null}
+                  <TouchableOpacity
+                    style={[styles.btnSuccess, { marginTop: 12, alignSelf: 'flex-start' }, assignmentError && styles.btnDisabled]}
+                    onPress={addAssignment}
+                    disabled={Boolean(assignmentError)}
+                  >
                     <Text style={styles.btnText}>+ Add this schedule</Text>
                   </TouchableOpacity>
                 </View>
@@ -681,7 +740,7 @@ function SetupWizard({ onComplete, onCancel }) {
                 ) : assignments.map((a) => (
                   <Text key={a.id} style={styles.wizReview}>• {presetLabel(a.preset)} for {a.children.join(', ')}</Text>
                 ))}
-                <Text style={[styles.wizSub, { marginTop: 12 }]}>Creating will set up your calendar. You can still edit everything afterward.</Text>
+                <Text style={[styles.wizSub, { marginTop: 12 }]}>Manual entries are preserved. Recurring entries are regenerated from these saved schedule definitions.</Text>
               </View>
             )}
 
@@ -726,6 +785,7 @@ export default function App() {
   const [entries, setEntries] = useState([
     { id: generateId(), parent: '', beginDate: '', endDate: '', childrenPresent: {}, note: '' },
   ]);
+  const [scheduleAssignments, setScheduleAssignments] = useState([]);
   const [newParentName, setNewParentName] = useState('');
   const [newChildName, setNewChildName] = useState('');
   const [showConfig, setShowConfig] = useState(true);
@@ -742,7 +802,7 @@ export default function App() {
   const [analysisChild, setAnalysisChild] = useState('all');
 
   // UI state
-  const [viewMode, setViewMode] = useState('list'); // 'list' | 'calendar'
+  const [viewMode, setViewMode] = useState('calendar'); // 'list' | 'calendar'
   const [showWizard, setShowWizard] = useState(false);
   const [datePicker, setDatePicker] = useState(null); // { context, field, current }
   const [parentPickerEntryId, setParentPickerEntryId] = useState(null);
@@ -773,6 +833,7 @@ export default function App() {
         if (data.parentColors) setParentColors(data.parentColors);
         if (data.childColors) setChildColors(data.childColors);
         if (data.entries) setEntries(data.entries);
+        if (data.scheduleAssignments) setScheduleAssignments(data.scheduleAssignments);
         if (data.reportingMode) setReportingMode(data.reportingMode);
         if (data.customStart) setCustomStart(data.customStart);
         if (data.customEnd) setCustomEnd(data.customEnd);
@@ -780,6 +841,7 @@ export default function App() {
         if (data.quarter) setQuarter(data.quarter);
         if (data.preset) setPreset(data.preset);
         if (data.analysisChild) setAnalysisChild(data.analysisChild);
+        if (data.viewMode) setViewMode(data.viewMode);
       }
       // Auto-open the setup wizard on a fresh install (no parents saved yet).
       if (!data || !data.parents || data.parents.length === 0) setShowWizard(true);
@@ -787,20 +849,21 @@ export default function App() {
     });
   }, []);
 
-  const completeWizard = ({ parents: wp, parentColors: wpc, children: wc, childColors: wcc, entries: we }) => {
+  const completeWizard = ({ parents: wp, parentColors: wpc, children: wc, childColors: wcc, entries: we, scheduleAssignments: wa }) => {
     setParents(wp);
     setParentColors(wpc);
     setChildren(wc);
     setChildColors(wcc);
     setEntries(we);
+    setScheduleAssignments(wa);
     setShowWizard(false);
     setViewMode('calendar');
   };
 
   useEffect(() => {
     if (!loaded) return;
-    saveData({ parents, children, parentColors, childColors, entries, reportingMode, customStart, customEnd, quarterYear, quarter, preset, analysisChild });
-  }, [loaded, parents, children, parentColors, childColors, entries, reportingMode, customStart, customEnd, quarterYear, quarter, preset, analysisChild]);
+    saveData({ parents, children, parentColors, childColors, entries, scheduleAssignments, reportingMode, customStart, customEnd, quarterYear, quarter, preset, analysisChild, viewMode });
+  }, [loaded, parents, children, parentColors, childColors, entries, scheduleAssignments, reportingMode, customStart, customEnd, quarterYear, quarter, preset, analysisChild, viewMode]);
 
   // ── config ───────────────────────────────────────────────────────────────────
 
@@ -894,6 +957,7 @@ export default function App() {
           const cp = {};
           children.forEach((c) => { cp[c] = true; });
           setEntries([{ id: generateId(), parent: '', beginDate: '', endDate: '', childrenPresent: cp, note: '' }]);
+          setScheduleAssignments([]);
         },
       },
     ]);
@@ -913,11 +977,12 @@ export default function App() {
             setParentColors({});
             setChildColors({});
             setEntries([{ id: generateId(), parent: '', beginDate: '', endDate: '', childrenPresent: {}, note: '' }]);
+            setScheduleAssignments([]);
             setReportingMode('custom');
             setCustomStart('');
             setCustomEnd('');
             setAnalysisChild('all');
-            setViewMode('list');
+            setViewMode('calendar');
             setShowWizard(true);
           },
         },
@@ -927,17 +992,25 @@ export default function App() {
 
   const runScheduleGenerator = () => {
     let newEntries = [];
+    if (!scheduleStart || !scheduleEnd || scheduleStart > scheduleEnd) {
+      Alert.alert('Invalid date range', 'Set an end date on or after the start date.');
+      return;
+    }
+    if (parents.length < 2) {
+      Alert.alert('Two parents required', 'Add two parents before generating a shared schedule.');
+      return;
+    }
     if (schedulePattern === 'eow' || schedulePattern === 'eow-midweek') {
-      if (!scheduleSecondaryParent || !scheduleStart || !scheduleEnd) {
-        Alert.alert('Missing Info', 'Please select a parent and set a date range.');
+      if (!scheduleSecondaryParent || scheduleSecondaryParent === parents[0]) {
+        Alert.alert('Choose the other parent', 'The weekend parent must be different from the primary parent.');
         return;
       }
       newEntries = schedulePattern === 'eow'
         ? generateEOWSchedule(scheduleSecondaryParent, scheduleStart, scheduleEnd, children, scheduleEOWDay)
         : generateEOWMidweek(scheduleSecondaryParent, scheduleStart, scheduleEnd, children, scheduleEOWDay, scheduleMidweekDow);
     } else {
-      if (!scheduleJointParent1 || !scheduleJointParent2 || !scheduleStart || !scheduleEnd) {
-        Alert.alert('Missing Info', 'Please select both parents and set a date range.');
+      if (!scheduleJointParent1 || !scheduleJointParent2 || scheduleJointParent1 === scheduleJointParent2) {
+        Alert.alert('Choose two parents', 'The schedule requires two different parents.');
         return;
       }
       newEntries = schedulePattern === '2-2-3'
@@ -948,13 +1021,26 @@ export default function App() {
       Alert.alert('No Entries', 'No entries generated. Check your date range.');
       return;
     }
+    const assignment = {
+      id: generateId(),
+      preset: schedulePattern,
+      start: scheduleStart,
+      end: scheduleEnd,
+      children: [...children],
+      eowDay: scheduleEOWDay,
+      midweek: scheduleMidweekDow,
+      ...(schedulePattern === 'eow' || schedulePattern === 'eow-midweek'
+        ? { secondary: scheduleSecondaryParent }
+        : { p1: scheduleJointParent1, p2: scheduleJointParent2 }),
+    };
+    const taggedEntries = newEntries.map((entry) => ({ ...entry, scheduleId: assignment.id }));
     Alert.alert(
       'Generated ' + newEntries.length + ' entries',
       'Replace existing entries or add to them?',
       [
         { text: 'Cancel' },
-        { text: 'Add to Existing', onPress: () => { setEntries([...entries, ...newEntries]); setShowScheduleGen(false); } },
-        { text: 'Replace All', style: 'destructive', onPress: () => { setEntries(newEntries); setShowScheduleGen(false); } },
+        { text: 'Add to Existing', onPress: () => { setEntries([...entries, ...taggedEntries]); setScheduleAssignments([...scheduleAssignments, assignment]); setShowScheduleGen(false); } },
+        { text: 'Replace All', style: 'destructive', onPress: () => { setEntries(taggedEntries); setScheduleAssignments([assignment]); setShowScheduleGen(false); } },
       ]
     );
   };
@@ -984,59 +1070,23 @@ export default function App() {
     return { start: '', end: '' };
   }, [reportingMode, customStart, customEnd, quarterYear, quarter, preset]);
 
-  const windowSummary = useMemo(() => {
-    if (!reportingWindow.start || !reportingWindow.end) return [];
-    const ps = {};
-    entries.forEach((entry) => {
-      if (!entry.beginDate || !entry.endDate) return;
-      const days = overlapDays(entry.beginDate, entry.endDate, reportingWindow.start, reportingWindow.end);
-      const nights = Math.max(0, days - 1);
-      let childNights = 0;
-      if (analysisChild === 'all') {
-        children.forEach((c) => { if (entry.childrenPresent[c]) childNights += nights; });
-      } else {
-        if (entry.childrenPresent[analysisChild]) childNights = nights;
-      }
-      if (!ps[entry.parent]) ps[entry.parent] = { days: 0, nights: 0 };
-      ps[entry.parent].days += days;
-      ps[entry.parent].nights += childNights;
-    });
-
-    // Primary parent gets all nights not explicitly covered by other entries.
-    // Only enter entries for non-primary custody periods; primary's share is inferred.
-    const primary = parents[0];
-    if (primary && reportingWindow.start && reportingWindow.end) {
-      const wDays = daysInclusive(reportingWindow.start, reportingWindow.end);
-      const wNights = wDays ? Math.max(0, wDays - 1) : 0;
-      const totalPossible = analysisChild === 'all' ? wNights * children.length : wNights;
-      const totalExplicit = Object.values(ps).reduce((s, d) => s + d.nights, 0);
-      const gapNights = Math.max(0, totalPossible - totalExplicit);
-      if (gapNights > 0) {
-        if (!ps[primary]) ps[primary] = { days: 0, nights: 0 };
-        ps[primary].nights += gapNights;
-        ps[primary].days += gapNights;
-      }
-    }
-
-    const total = Object.values(ps).reduce((s, p) => s + p.nights, 0);
-    return Object.entries(ps).map(([parent, data]) => ({
-      parent,
-      days: data.days,
-      nights: data.nights,
-      percentage: total > 0 ? ((data.nights / total) * 100).toFixed(1) : '0.0',
-    }));
-  }, [entries, reportingWindow, analysisChild, children, parents]);
-
-  const totalWindowNights = windowSummary.reduce((s, p) => s + p.nights, 0);
+  const summaryResult = useMemo(() => computeCustodySummary({
+    entries,
+    parents,
+    children,
+    start: reportingWindow.start,
+    end: reportingWindow.end,
+    childFilter: analysisChild,
+  }), [entries, reportingWindow, analysisChild, children, parents]);
+  const windowSummary = summaryResult.rows;
 
   const footerTotals = useMemo(() => {
-    let totalDays = 0, totalNights = 0;
+    let totalDays = 0;
     entries.forEach((e) => {
       const d = daysInclusive(e.beginDate, e.endDate);
-      const n = nightsInclusive(e.beginDate, e.endDate);
-      if (d !== null) { totalDays += d; totalNights += n; }
+      if (d !== null) totalDays += d;
     });
-    return { totalDays, totalNights };
+    return { totalDays };
   }, [entries]);
 
   // ── export ───────────────────────────────────────────────────────────────────
@@ -1049,11 +1099,10 @@ export default function App() {
       };
       const csvRow = (arr) => arr.map(esc).join(',');
 
-      const headers = ['Parent', 'Begin Date', 'End Date', 'Duration (days)', 'Duration (nights)', ...children, 'Note'];
+      const headers = ['Parent', 'Begin Date', 'End Date', 'Custody Days', ...children, 'Note'];
       const rows = entries.map((e) => [
         e.parent, e.beginDate, e.endDate,
         daysInclusive(e.beginDate, e.endDate) ?? '',
-        nightsInclusive(e.beginDate, e.endDate) ?? '',
         ...children.map((c) => (e.childrenPresent[c] ? 'Yes' : 'No')),
         e.note,
       ]);
@@ -1063,8 +1112,8 @@ export default function App() {
         ? `${reportingWindow.start} to ${reportingWindow.end} (${childLabel})`
         : '(no window set)';
 
-      const summaryHeaders = ['Parent', 'Days', 'Nights', '% Nights'];
-      const summaryRows = windowSummary.map((item) => [item.parent, item.days, item.nights, `${item.percentage}%`]);
+      const summaryHeaders = ['Parent', 'Custody Days', '% Custody Days'];
+      const summaryRows = windowSummary.map((item) => [item.parent, item.custodyDays, `${item.percentage}%`]);
 
       let csv = `# CUSTODY CALENDAR EXPORT\n# Generated: ${new Date().toLocaleString()}\n\n`;
       csv += '# CUSTODY ENTRIES\n';
@@ -1120,7 +1169,13 @@ export default function App() {
   return (
     <SafeAreaView style={styles.safeArea}>
       <StatusBar barStyle="dark-content" backgroundColor="#f9fafb" />
-      {showWizard && <SetupWizard onComplete={completeWizard} onCancel={() => setShowWizard(false)} />}
+      {showWizard && (
+        <SetupWizard
+          initialData={{ parents, children, parentColors, childColors, entries, scheduleAssignments }}
+          onComplete={completeWizard}
+          onCancel={() => setShowWizard(false)}
+        />
+      )}
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <ScrollView style={styles.scroll} contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
 
@@ -1139,6 +1194,8 @@ export default function App() {
                 key={m.id}
                 style={[styles.segmentBtn, viewMode === m.id && styles.segmentBtnActive]}
                 onPress={() => setViewMode(m.id)}
+                accessibilityRole="tab"
+                accessibilityState={{ selected: viewMode === m.id }}
               >
                 <Text style={[styles.segmentText, viewMode === m.id && styles.segmentTextActive]}>{m.label}</Text>
               </TouchableOpacity>
@@ -1165,16 +1222,16 @@ export default function App() {
                 <View style={styles.tagRow}>
                   {parents.map((p, i) => (
                     <View key={p} style={styles.tag}>
-                      <TouchableOpacity onPress={() => setColorPicker({ type: 'parent', name: p })}>
+                      <TouchableOpacity onPress={() => setColorPicker({ type: 'parent', name: p })} accessibilityRole="button" accessibilityLabel={`Change color for ${p}`}>
                         <View style={[styles.tagSwatch, { backgroundColor: colorForName(p, parents, parentColors) }]} />
                       </TouchableOpacity>
                       <Text style={styles.tagText}>{p}{i === 0 ? ' (Primary)' : ''}</Text>
                       {i !== 0 && (
-                        <TouchableOpacity onPress={() => setPrimary(p)}>
+                        <TouchableOpacity onPress={() => setPrimary(p)} accessibilityRole="button" accessibilityLabel={`Make ${p} the primary parent`}>
                           <Text style={styles.tagStar}>☆</Text>
                         </TouchableOpacity>
                       )}
-                      <TouchableOpacity onPress={() => removeParent(p)} disabled={parents.length === 1}>
+                      <TouchableOpacity onPress={() => removeParent(p)} disabled={parents.length === 1} accessibilityRole="button" accessibilityLabel={`Remove ${p}`}>
                         <Text style={[styles.tagX, parents.length === 1 && styles.tagXDisabled]}>×</Text>
                       </TouchableOpacity>
                     </View>
@@ -1199,11 +1256,11 @@ export default function App() {
                 <View style={styles.tagRow}>
                   {children.map((c) => (
                     <View key={c} style={styles.tag}>
-                      <TouchableOpacity onPress={() => setColorPicker({ type: 'child', name: c })}>
+                      <TouchableOpacity onPress={() => setColorPicker({ type: 'child', name: c })} accessibilityRole="button" accessibilityLabel={`Change color for ${c}`}>
                         <View style={[styles.tagSwatch, { backgroundColor: colorForName(c, children, childColors) }]} />
                       </TouchableOpacity>
                       <Text style={styles.tagText}>{c}</Text>
-                      <TouchableOpacity onPress={() => removeChild(c)} disabled={children.length === 1}>
+                      <TouchableOpacity onPress={() => removeChild(c)} disabled={children.length === 1} accessibilityRole="button" accessibilityLabel={`Remove ${c}`}>
                         <Text style={[styles.tagX, children.length === 1 && styles.tagXDisabled]}>×</Text>
                       </TouchableOpacity>
                     </View>
@@ -1223,9 +1280,14 @@ export default function App() {
                   </TouchableOpacity>
                 </View>
 
-                <TouchableOpacity style={[styles.btnDanger, { marginTop: 20, alignSelf: 'flex-start' }]} onPress={resetAll}>
-                  <Text style={styles.btnText}>Reset all data</Text>
-                </TouchableOpacity>
+                <View style={[styles.actionRow, { marginTop: 20 }]}>
+                  <TouchableOpacity style={styles.btnDanger} onPress={clearAll}>
+                    <Text style={styles.btnText}>Clear entries</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.btnDanger} onPress={resetAll}>
+                    <Text style={styles.btnText}>Reset all data</Text>
+                  </TouchableOpacity>
+                </View>
               </View>
             )}
           </View>
@@ -1233,7 +1295,7 @@ export default function App() {
           {/* Actions */}
           <View style={styles.actionRow}>
             <TouchableOpacity style={{ backgroundColor: '#6b7280', paddingHorizontal: 14, paddingVertical: 9, borderRadius: 8 }} onPress={() => setShowWizard(true)}>
-              <Text style={styles.btnText}>🧭 Setup</Text>
+              <Text style={styles.btnText}>Edit household</Text>
             </TouchableOpacity>
             <TouchableOpacity style={styles.btnPrimary} onPress={addRow}>
               <Text style={styles.btnText}>+ Add Entry</Text>
@@ -1243,9 +1305,6 @@ export default function App() {
             </TouchableOpacity>
             <TouchableOpacity style={styles.btnSuccess} onPress={exportCSV}>
               <Text style={styles.btnText}>Export CSV</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.btnDanger} onPress={clearAll}>
-              <Text style={styles.btnText}>Clear All</Text>
             </TouchableOpacity>
           </View>
 
@@ -1354,22 +1413,24 @@ export default function App() {
                 <Text style={styles.windowInfo}>
                   Window: {reportingWindow.start || 'not set'} → {reportingWindow.end || 'not set'}
                 </Text>
-                <Text style={styles.windowInfo}>Total nights in window: {totalWindowNights}</Text>
+                <Text style={styles.windowInfo}>{analysisChild === 'all' ? 'Counted child-days' : 'Counted custody days'}: {summaryResult.totalUnits}</Text>
+                {summaryResult.conflictDays > 0 && (
+                  <Text style={styles.calConflictNote}>{summaryResult.conflictDays} conflicting child-day(s) excluded from this report.</Text>
+                )}
 
                 {windowSummary.length > 0 && (
                   <View style={{ marginTop: 12 }}>
                     <Text style={styles.fieldLabel}>Summary by Parent</Text>
                     <View style={styles.table}>
                       <View style={[styles.tableRow, styles.tableHeader]}>
-                        {['Parent', 'Days', 'Nights', '% Nights'].map((h) => (
+                        {['Parent', 'Custody days', 'Share'].map((h) => (
                           <Text key={h} style={[styles.tableCell, styles.tableCellHeader]}>{h}</Text>
                         ))}
                       </View>
                       {windowSummary.map((item, i) => (
                         <View key={i} style={[styles.tableRow, i % 2 === 1 && styles.tableRowAlt]}>
                           <Text style={styles.tableCell}>{item.parent}</Text>
-                          <Text style={styles.tableCell}>{item.days}</Text>
-                          <Text style={styles.tableCell}>{item.nights}</Text>
+                          <Text style={styles.tableCell}>{item.custodyDays}</Text>
                           <Text style={styles.tableCell}>{item.percentage}%</Text>
                         </View>
                       ))}
@@ -1383,7 +1444,6 @@ export default function App() {
           {/* Entries */}
           {entries.map((entry) => {
             const days = daysInclusive(entry.beginDate, entry.endDate);
-            const nights = nightsInclusive(entry.beginDate, entry.endDate);
             return (
               <View key={entry.id} style={styles.entryCard}>
                 <View style={styles.entryCardHeader}>
@@ -1392,7 +1452,7 @@ export default function App() {
                       ? `${displayDate(entry.beginDate)} – ${displayDate(entry.endDate)}`
                       : 'New Entry'}
                   </Text>
-                  <TouchableOpacity onPress={() => removeRow(entry.id)} disabled={entries.length === 1}>
+                  <TouchableOpacity onPress={() => removeRow(entry.id)} disabled={entries.length === 1} accessibilityRole="button" accessibilityLabel={`Delete entry ${displayDate(entry.beginDate)} to ${displayDate(entry.endDate)}`}>
                     <Text style={[styles.deleteBtn, entries.length === 1 && styles.deleteBtnDisabled]}>🗑️</Text>
                   </TouchableOpacity>
                 </View>
@@ -1425,7 +1485,7 @@ export default function App() {
                 {/* Duration */}
                 {days !== null && (
                   <View style={styles.durationBadge}>
-                    <Text style={styles.durationText}>{days} days · {nights} nights</Text>
+                    <Text style={styles.durationText}>{days} custody day(s)</Text>
                   </View>
                 )}
 
@@ -1464,8 +1524,7 @@ export default function App() {
 
           {/* Footer */}
           <View style={styles.footer}>
-            <Text style={styles.footerText}>Total Days: {footerTotals.totalDays}</Text>
-            <Text style={styles.footerText}>Total Nights: {footerTotals.totalNights}</Text>
+            <Text style={styles.footerText}>Entered custody days: {footerTotals.totalDays}</Text>
           </View>
           </>
           )}
@@ -1757,6 +1816,7 @@ const styles = StyleSheet.create({
   wizRowText: { flex: 1, fontSize: 15, color: '#111827' },
   wizReview: { fontSize: 14, color: '#374151', marginBottom: 6, lineHeight: 20 },
   assignRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#eff6ff', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 8, marginBottom: 6 },
+  assignRowInvalid: { backgroundColor: '#fef2f2', borderWidth: 1, borderColor: '#fecaca' },
   assignText: { flex: 1, fontSize: 13, color: '#1d4ed8' },
   tagXDisabled: { color: '#d1d5db' },
 
@@ -1776,7 +1836,9 @@ const styles = StyleSheet.create({
   btnPrimary: { backgroundColor: '#2563eb', paddingHorizontal: 14, paddingVertical: 9, borderRadius: 8 },
   btnSuccess: { backgroundColor: '#16a34a', paddingHorizontal: 14, paddingVertical: 9, borderRadius: 8 },
   btnDanger: { backgroundColor: '#dc2626', paddingHorizontal: 14, paddingVertical: 9, borderRadius: 8 },
+  btnDisabled: { opacity: 0.45 },
   btnText: { color: '#fff', fontWeight: '600', fontSize: 14 },
+  inlineError: { color: '#b91c1c', fontSize: 12, marginTop: 8, lineHeight: 17 },
 
   tabRow: { flexDirection: 'row', gap: 6, marginBottom: 12 },
   tab: {
@@ -1857,10 +1919,13 @@ const styles = StyleSheet.create({
   calCell: { width: `${100 / 7}%`, aspectRatio: 1, padding: 2 },
   calDay: { flex: 1, borderRadius: 8, alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: 'transparent' },
   calDayNum: { fontSize: 14, fontWeight: '600' },
+  calDayNumOverlay: { zIndex: 2, textShadowColor: 'rgba(0,0,0,0.55)', textShadowRadius: 2, textShadowOffset: { width: 0, height: 1 } },
+  calSplitFill: { ...StyleSheet.absoluteFillObject, flexDirection: 'row', borderRadius: 6, overflow: 'hidden' },
   calDayToday: { fontWeight: '800', textDecorationLine: 'underline' },
   calDaySelected: { borderColor: '#111827', borderWidth: 3 },
   calDayConflict: { borderColor: '#dc2626', borderWidth: 2, borderStyle: 'dashed' },
   calConflictNote: { fontSize: 12, color: '#dc2626', marginTop: 8 },
+  calSplitNote: { fontSize: 12, color: '#4f46e5', marginTop: 8 },
   calHint: { fontSize: 12, color: '#9ca3af', marginTop: 10, lineHeight: 17 },
   calSelectHint: { fontSize: 12, color: '#2563eb', textAlign: 'center', marginBottom: 10 },
   legendRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 5 },

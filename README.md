@@ -6,17 +6,20 @@ A React Native / Expo app for tracking child custody schedules and generating cu
 
 - **Configure parents and children** — set a primary parent and any number of children
 - **Custody entries** — record date ranges, which children are present, and notes
-- **Calendar view** — a color-coded month grid showing who the child stays with each night; unassigned nights default to the primary parent, and conflicting entries are flagged
+- **Guided household setup** — add parents, children, and per-child recurring schedules in a four-step intake flow
+- **Calendar view** — a color-coded month grid with per-child filters, split-color sibling schedules, cross-month range selection, and same-child conflict detection
 - **Schedule generator** — auto-create entries for common arrangements:
-  - Primary + Every Other Weekend (Friday or Saturday start)
-  - Joint / Alternating Weekly
-- **Reporting & analysis** — custom range, quarter, or presets (YTD, last 12 months, calendar year), with per-parent night counts and percentages, filterable by child
+  - Every Other Weekend (~80/20)
+  - Every Other Weekend + Midweek (~70/30)
+  - Joint / Alternating Weekly (50/50)
+  - 2-2-3 rotation (50/50)
+- **Reporting & analysis** — custom range, quarter, or presets (YTD, last 12 months, calendar year), with per-parent custody-day counts and percentages, filterable by child
 - **CSV export** — share a report via the native share sheet
 - **Automatic persistence** — all data is saved locally on the device (AsyncStorage); nothing is lost when you close the app
 
-## How custody nights are counted
+## How custody days are counted
 
-The **primary parent is the default custodian**. You only enter entries for periods when a *non-primary* parent has the child; every night not covered by an explicit entry is attributed to the primary parent. An entry from `begin` to `end` covers the nights `begin … end‑1` (handoff happens on the end day).
+Each selected calendar date counts as one custody day for each included child. Explicit entries take precedence; dates without an explicit entry are attributed to the primary parent in reports. If the same child is assigned to two parents on one date, that child-day is flagged and excluded from the percentage until corrected. Different children may legitimately have different parents on the same date and are shown as a split-color calendar day.
 
 ## Tech stack
 
@@ -53,10 +56,13 @@ Scan the QR code with the Expo Go app to run on a physical device.
 
 ## Project structure
 
-- `App.js` — the entire application (UI, state, persistence, calendar, reporting, export)
+- `App.js` — application UI, state, persistence, calendar, and export
+- `custody-engine.js` — tested per-child custody ownership and reporting logic
+- `custody-engine.test.js` — ownership, conflict, split-schedule, and percentage tests
 - `index.js` — Expo entry point
 
 ## Notes
 
 - Data lives only on the device. Use **Export CSV** to back up or share your records.
+- Run `npm test` to verify the custody calculation engine.
 - This project currently uses a canary Expo SDK build; if `npm install` reports peer-dependency conflicts, run `npm install --legacy-peer-deps`.
