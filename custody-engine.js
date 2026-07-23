@@ -40,13 +40,17 @@ function entryCoversChild(entry, dateStr, child) {
 }
 
 function getChildDayState(dateStr, entries, child) {
-  const parents = [...new Set(
-    entries.filter((entry) => entryCoversChild(entry, dateStr, child)).map((entry) => entry.parent)
-  )];
+  const covering = entries.filter((entry) => entryCoversChild(entry, dateStr, child));
+  // Holiday/exception entries override the recurring schedule: when any
+  // exception covers this child on this date, only exceptions are considered.
+  const exceptions = covering.filter((entry) => entry.isException);
+  const pool = exceptions.length ? exceptions : covering;
+  const isException = exceptions.length > 0;
+  const parents = [...new Set(pool.map((entry) => entry.parent))];
 
-  if (parents.length === 0) return { type: 'unassigned', child, parent: null, parents: [] };
-  if (parents.length === 1) return { type: 'single', child, parent: parents[0], parents };
-  return { type: 'conflict', child, parent: null, parents };
+  if (parents.length === 0) return { type: 'unassigned', child, parent: null, parents: [], isException: false };
+  if (parents.length === 1) return { type: 'single', child, parent: parents[0], parents, isException };
+  return { type: 'conflict', child, parent: null, parents, isException };
 }
 
 function getCalendarDayState(dateStr, entries, children, childFilter) {
@@ -54,9 +58,10 @@ function getCalendarDayState(dateStr, entries, children, childFilter) {
     ? [childFilter]
     : (children && children.length ? children : [null]);
   const childStates = selectedChildren.map((child) => getChildDayState(dateStr, entries, child));
+  const isException = childStates.some((state) => state.isException);
 
   if (childStates.some((state) => state.type === 'conflict')) {
-    return { type: 'conflict', parent: null, childStates };
+    return { type: 'conflict', parent: null, childStates, isException };
   }
 
   const assignedParents = [...new Set(
@@ -64,11 +69,11 @@ function getCalendarDayState(dateStr, entries, children, childFilter) {
   )];
   const hasUnassigned = childStates.some((state) => state.type === 'unassigned');
 
-  if (assignedParents.length === 0) return { type: 'unassigned', parent: null, childStates };
+  if (assignedParents.length === 0) return { type: 'unassigned', parent: null, childStates, isException };
   if (assignedParents.length === 1 && !hasUnassigned) {
-    return { type: 'single', parent: assignedParents[0], childStates };
+    return { type: 'single', parent: assignedParents[0], childStates, isException };
   }
-  return { type: 'split', parent: null, childStates };
+  return { type: 'split', parent: null, childStates, isException };
 }
 
 function computeCustodySummary({ entries, parents, children, start, end, childFilter = 'all' }) {

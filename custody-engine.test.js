@@ -4,6 +4,7 @@ const {
   computeCustodySummary,
   enumerateDates,
   getCalendarDayState,
+  getChildDayState,
 } = require('./custody-engine');
 
 function entry(parent, beginDate, endDate, children) {
@@ -13,6 +14,10 @@ function entry(parent, beginDate, endDate, children) {
     endDate,
     childrenPresent: Object.fromEntries(children.map((child) => [child, true])),
   };
+}
+
+function holiday(parent, beginDate, endDate, children) {
+  return { ...entry(parent, beginDate, endDate, children), isException: true };
 }
 
 test('enumerates inclusive local dates across month boundaries', () => {
@@ -74,6 +79,44 @@ test('a 2-2-3 cycle totals 50/50 over fourteen days', () => {
   assert.deepEqual(result.rows, [
     { parent: 'Mom', custodyDays: 7, percentage: 50 },
     { parent: 'Dad', custodyDays: 7, percentage: 50 },
+  ]);
+});
+
+test('a holiday exception overrides the recurring schedule for that child-day', () => {
+  const entries = [
+    entry('Mom', '2026-12-25', '2026-12-25', ['Sam']),
+    holiday('Dad', '2026-12-25', '2026-12-25', ['Sam']),
+  ];
+  const state = getChildDayState('2026-12-25', entries, 'Sam');
+  assert.equal(state.type, 'single');
+  assert.equal(state.parent, 'Dad');
+  assert.equal(state.isException, true);
+});
+
+test('two holiday exceptions for the same child still conflict', () => {
+  const entries = [
+    holiday('Mom', '2026-12-25', '2026-12-25', ['Sam']),
+    holiday('Dad', '2026-12-25', '2026-12-25', ['Sam']),
+  ];
+  const state = getChildDayState('2026-12-25', entries, 'Sam');
+  assert.equal(state.type, 'conflict');
+});
+
+test('reporting credits the holiday parent, not the base schedule', () => {
+  const result = computeCustodySummary({
+    entries: [
+      entry('Mom', '2026-12-24', '2026-12-26', ['Sam']),
+      holiday('Dad', '2026-12-25', '2026-12-25', ['Sam']),
+    ],
+    parents: ['Mom', 'Dad'],
+    children: ['Sam'],
+    start: '2026-12-24',
+    end: '2026-12-26',
+    childFilter: 'Sam',
+  });
+  assert.deepEqual(result.rows, [
+    { parent: 'Mom', custodyDays: 2, percentage: 66.7 },
+    { parent: 'Dad', custodyDays: 1, percentage: 33.3 },
   ]);
 });
 

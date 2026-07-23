@@ -225,6 +225,8 @@ function CalendarView({ entries, parents, parentColors, children, childColors, o
   const [pendingStart, setPendingStart] = useState(null);
   const [pendingRange, setPendingRange] = useState(null); // {start, end} awaiting parent
   const [childFilter, setChildFilter] = useState(null); // null = all children
+  const [pendingHoliday, setPendingHoliday] = useState(false);
+  const [pendingHolidayName, setPendingHolidayName] = useState('');
 
   const todayStr = localTodayStr();
 
@@ -233,7 +235,7 @@ function CalendarView({ entries, parents, parentColors, children, childColors, o
   const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
   const firstDow = new Date(viewYear, viewMonth, 1).getDay();
 
-  const resetSelection = () => { setPendingStart(null); setPendingRange(null); };
+  const resetSelection = () => { setPendingStart(null); setPendingRange(null); setPendingHoliday(false); setPendingHolidayName(''); };
   const prevMonth = () => {
     if (viewMonth === 0) { setViewMonth(11); setViewYear((y) => y - 1); }
     else setViewMonth((m) => m - 1);
@@ -256,11 +258,13 @@ function CalendarView({ entries, parents, parentColors, children, childColors, o
   const monthTally = {};
   let hasConflict = false;
   let hasSplit = false;
+  let hasHoliday = false;
   for (let day = 1; day <= daysInMonth; day++) {
     const ds = `${viewYear}-${pad2(viewMonth + 1)}-${pad2(day)}`;
     const state = getCalendarDayState(ds, entries, children, childFilter);
     if (state.type === 'conflict') hasConflict = true;
     if (state.type === 'split') hasSplit = true;
+    if (state.isException) hasHoliday = true;
     state.childStates.forEach((childState) => {
       if (childState.type === 'single') {
         monthTally[childState.parent] = (monthTally[childState.parent] || 0) + 1;
@@ -347,7 +351,7 @@ function CalendarView({ entries, parents, parentColors, children, childColors, o
                 activeOpacity={0.6}
                 onPress={() => handleDayClick(ds)}
                 accessibilityRole="button"
-                accessibilityLabel={`${displayDate(ds)}${state.type === 'split' ? ', children have different schedules' : state.type === 'conflict' ? ', conflicting entries' : state.parent ? `, ${state.parent}` : ', unassigned'}`}
+                accessibilityLabel={`${displayDate(ds)}${state.isException ? ', holiday' : ''}${state.type === 'split' ? ', children have different schedules' : state.type === 'conflict' ? ', conflicting entries' : state.parent ? `, ${state.parent}` : ', unassigned'}`}
               >
                 <View style={[
                   styles.calDay,
@@ -364,6 +368,7 @@ function CalendarView({ entries, parents, parentColors, children, childColors, o
                       ))}
                     </View>
                   )}
+                  {state.isException && <Text style={styles.calHolidayMark}>🎁</Text>}
                   <Text style={[
                     styles.calDayNum,
                     { color: (col || state.type === 'split') ? '#fff' : '#9ca3af' },
@@ -389,6 +394,23 @@ function CalendarView({ entries, parents, parentColors, children, childColors, o
             <Text style={styles.modalEmpty}>Add parents in the Entries tab first, then you can assign custody.</Text>
           ) : (
             <View>
+              <View style={[styles.switchRow, { marginTop: 12 }]}>
+                <Text style={styles.switchLabel}>🎁 Holiday / exception (overrides the schedule)</Text>
+                <Switch
+                  value={pendingHoliday}
+                  onValueChange={setPendingHoliday}
+                  trackColor={{ false: '#d1d5db', true: '#93c5fd' }}
+                  thumbColor={pendingHoliday ? '#2563eb' : '#f3f4f6'}
+                />
+              </View>
+              {pendingHoliday && (
+                <TextInput
+                  style={[styles.input, { marginBottom: 4 }]}
+                  value={pendingHolidayName}
+                  onChangeText={setPendingHolidayName}
+                  placeholder="Holiday name (e.g. Christmas)"
+                />
+              )}
               <Text style={[styles.fieldLabel, { marginTop: 12 }]}>Assign to</Text>
               <View style={styles.chipRow}>
                 {parents.map((p, idx) => {
@@ -397,7 +419,7 @@ function CalendarView({ entries, parents, parentColors, children, childColors, o
                     <TouchableOpacity
                       key={p}
                       style={{ backgroundColor: col, paddingHorizontal: 14, paddingVertical: 9, borderRadius: 8 }}
-                      onPress={() => { onCreateEntry(pendingRange.start, pendingRange.end, p, childFilter); resetSelection(); }}
+                      onPress={() => { onCreateEntry(pendingRange.start, pendingRange.end, p, childFilter, pendingHoliday, pendingHolidayName); resetSelection(); }}
                     >
                       <Text style={styles.btnText}>{p}{idx === 0 ? ' (Primary)' : ''}</Text>
                     </TouchableOpacity>
@@ -437,6 +459,9 @@ function CalendarView({ entries, parents, parentColors, children, childColors, o
         )}
         {hasSplit && !childFilter && (
           <Text style={styles.calSplitNote}>Split-color days mean the children have different schedules.</Text>
+        )}
+        {hasHoliday && (
+          <Text style={styles.calHint}>🎁 marks a holiday/exception that overrides the recurring schedule.</Text>
         )}
         <Text style={styles.calHint}>
           Choose a child to see one schedule. Gray means no explicit entry; reporting credits unassigned days to the primary parent.
@@ -934,10 +959,18 @@ export default function App() {
     setEntries([...entries, { id: generateId(), parent: '', beginDate: '', endDate: '', childrenPresent: cp, note: '' }]);
   };
 
-  const createEntryFromCalendar = (start, end, parent, childFilter) => {
+  const createEntryFromCalendar = (start, end, parent, childFilter, isException, name) => {
     const cp = {};
     children.forEach((c) => { cp[c] = childFilter ? c === childFilter : true; });
-    setEntries([...entries, { id: generateId(), parent, beginDate: start, endDate: end, childrenPresent: cp, note: '' }]);
+    setEntries([...entries, {
+      id: generateId(),
+      parent,
+      beginDate: start,
+      endDate: end,
+      childrenPresent: cp,
+      note: name || '',
+      isException: Boolean(isException),
+    }]);
   };
 
   const removeRow = (id) => {
@@ -1099,10 +1132,11 @@ export default function App() {
       };
       const csvRow = (arr) => arr.map(esc).join(',');
 
-      const headers = ['Parent', 'Begin Date', 'End Date', 'Custody Days', ...children, 'Note'];
+      const headers = ['Parent', 'Begin Date', 'End Date', 'Custody Days', 'Type', ...children, 'Note'];
       const rows = entries.map((e) => [
         e.parent, e.beginDate, e.endDate,
         daysInclusive(e.beginDate, e.endDate) ?? '',
+        e.isException ? 'Holiday' : 'Schedule',
         ...children.map((c) => (e.childrenPresent[c] ? 'Yes' : 'No')),
         e.note,
       ]);
@@ -1445,9 +1479,10 @@ export default function App() {
           {entries.map((entry) => {
             const days = daysInclusive(entry.beginDate, entry.endDate);
             return (
-              <View key={entry.id} style={styles.entryCard}>
+              <View key={entry.id} style={[styles.entryCard, entry.isException && styles.entryCardHoliday]}>
                 <View style={styles.entryCardHeader}>
                   <Text style={styles.entryCardTitle}>
+                    {entry.isException ? '🎁 ' : ''}
                     {entry.beginDate && entry.endDate
                       ? `${displayDate(entry.beginDate)} – ${displayDate(entry.endDate)}`
                       : 'New Entry'}
@@ -1455,6 +1490,17 @@ export default function App() {
                   <TouchableOpacity onPress={() => removeRow(entry.id)} disabled={entries.length === 1} accessibilityRole="button" accessibilityLabel={`Delete entry ${displayDate(entry.beginDate)} to ${displayDate(entry.endDate)}`}>
                     <Text style={[styles.deleteBtn, entries.length === 1 && styles.deleteBtnDisabled]}>🗑️</Text>
                   </TouchableOpacity>
+                </View>
+
+                {/* Holiday / exception */}
+                <View style={styles.switchRow}>
+                  <Text style={styles.switchLabel}>🎁 Holiday / exception (overrides schedule)</Text>
+                  <Switch
+                    value={Boolean(entry.isException)}
+                    onValueChange={(val) => updateEntry(entry.id, 'isException', val)}
+                    trackColor={{ false: '#d1d5db', true: '#93c5fd' }}
+                    thumbColor={entry.isException ? '#2563eb' : '#f3f4f6'}
+                  />
                 </View>
 
                 {/* Parent */}
@@ -1921,6 +1967,7 @@ const styles = StyleSheet.create({
   calDayNum: { fontSize: 14, fontWeight: '600' },
   calDayNumOverlay: { zIndex: 2, textShadowColor: 'rgba(0,0,0,0.55)', textShadowRadius: 2, textShadowOffset: { width: 0, height: 1 } },
   calSplitFill: { ...StyleSheet.absoluteFillObject, flexDirection: 'row', borderRadius: 6, overflow: 'hidden' },
+  calHolidayMark: { position: 'absolute', top: 0, right: 1, fontSize: 9, zIndex: 3 },
   calDayToday: { fontWeight: '800', textDecorationLine: 'underline' },
   calDaySelected: { borderColor: '#111827', borderWidth: 3 },
   calDayConflict: { borderColor: '#dc2626', borderWidth: 2, borderStyle: 'dashed' },
@@ -1953,6 +2000,7 @@ const styles = StyleSheet.create({
     borderLeftWidth: 4,
     borderLeftColor: '#2563eb',
   },
+  entryCardHoliday: { borderLeftColor: '#d97706', backgroundColor: '#fffbeb' },
   entryCardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
   entryCardTitle: { fontSize: 15, fontWeight: '600', color: '#111827', flex: 1 },
   deleteBtn: { fontSize: 20 },
