@@ -9,7 +9,13 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
-const { computeCustodySummary, getCalendarDayState, resolveLocation } = require('./custody-engine');
+const {
+  computeCustodySummary,
+  getCalendarDayState,
+  resolveLocation,
+  buildCustodyBlocks,
+  buildICS,
+} = require('./custody-engine');
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -1176,6 +1182,54 @@ export default function App() {
     }
   };
 
+  // Share the schedule as a calendar file the kids can add to Apple/Google Calendar.
+  const exportICS = async () => {
+    try {
+      if (parents.length === 0) {
+        Alert.alert('Nothing to export', 'Add parents and a schedule first.');
+        return;
+      }
+      // Use the reporting window when it is set, otherwise the next 12 months.
+      let start = reportingWindow.start;
+      let end = reportingWindow.end;
+      if (!start || !end) {
+        start = localTodayStr();
+        const in12 = toDate(start);
+        in12.setFullYear(in12.getFullYear() + 1);
+        end = formatDateStr(in12);
+      }
+
+      const singleChild = analysisChild !== 'all';
+      const blocks = buildCustodyBlocks({
+        entries, parents, children, start, end,
+        childFilter: analysisChild,
+      });
+      if (blocks.length === 0) {
+        Alert.alert('Nothing to export', 'No custody days fall in this date range.');
+        return;
+      }
+
+      const who = singleChild ? analysisChild : (children.length ? children.join(' & ') : 'Custody');
+      const ics = buildICS({
+        blocks,
+        parentLocations,
+        calendarName: `${who} — Custody Schedule`,
+        singleChild,
+      });
+
+      const safe = who.replace(/[^A-Za-z0-9]+/g, '_');
+      const path = FileSystem.documentDirectory + `Custody_${safe}_${start}_to_${end}.ics`;
+      await FileSystem.writeAsStringAsync(path, ics, { encoding: FileSystem.EncodingType.UTF8 });
+      await Sharing.shareAsync(path, {
+        mimeType: 'text/calendar',
+        UTI: 'com.apple.ical.ics',
+        dialogTitle: 'Share custody calendar',
+      });
+    } catch (e) {
+      Alert.alert('Export Failed', e.message);
+    }
+  };
+
   // ── date picker ──────────────────────────────────────────────────────────────
 
   const openDatePicker = (context, field, currentStr) => {
@@ -1377,6 +1431,9 @@ export default function App() {
             </TouchableOpacity>
             <TouchableOpacity style={styles.btnPrimary} onPress={() => setShowScheduleGen(true)}>
               <Text style={styles.btnText}>⚡ Generate</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.btnSuccess} onPress={exportICS}>
+              <Text style={styles.btnText}>📅 Share Calendar</Text>
             </TouchableOpacity>
             <TouchableOpacity style={styles.btnSuccess} onPress={exportCSV}>
               <Text style={styles.btnText}>Export CSV</Text>

@@ -6,6 +6,9 @@ const {
   getCalendarDayState,
   getChildDayState,
   resolveLocation,
+  buildCustodyBlocks,
+  buildICS,
+  escapeICSText,
 } = require('./custody-engine');
 
 function entry(parent, beginDate, endDate, children) {
@@ -165,4 +168,107 @@ test('excludes conflicting child-days and reports them', () => {
   });
   assert.equal(result.conflictDays, 1);
   assert.equal(result.totalUnits, 0);
+});
+
+// ── Calendar export ──────────────────────────────────────────────────────────
+
+test('merges consecutive same-parent days into one block', () => {
+  const blocks = buildCustodyBlocks({
+    entries: [entry('Dad', '2026-06-05', '2026-06-07', ['Sam'])],
+    parents: ['Mom', 'Dad'],
+    children: ['Sam'],
+    start: '2026-06-05',
+    end: '2026-06-07',
+    fillGapsWithPrimary: false,
+  });
+  assert.equal(blocks.length, 1);
+  assert.equal(blocks[0].start, '2026-06-05');
+  assert.equal(blocks[0].end, '2026-06-07');
+  assert.equal(blocks[0].parent, 'Dad');
+});
+
+test('splits blocks when the parent changes and fills gaps with the primary', () => {
+  const blocks = buildCustodyBlocks({
+    entries: [entry('Dad', '2026-06-03', '2026-06-03', ['Sam'])],
+    parents: ['Mom', 'Dad'],
+    children: ['Sam'],
+    start: '2026-06-01',
+    end: '2026-06-05',
+  });
+  assert.deepEqual(
+    blocks.map((b) => [b.parent, b.start, b.end]),
+    [['Mom', '2026-06-01', '2026-06-02'], ['Dad', '2026-06-03', '2026-06-03'], ['Mom', '2026-06-04', '2026-06-05']]
+  );
+  assert.equal(blocks[0].inferred, true);
+  assert.equal(blocks[1].inferred, false);
+});
+
+test('a holiday override becomes its own block', () => {
+  const blocks = buildCustodyBlocks({
+    entries: [
+      entry('Mom', '2026-12-24', '2026-12-26', ['Sam']),
+      { ...entry('Dad', '2026-12-25', '2026-12-25', ['Sam']), isException: true, note: 'Christmas' },
+    ],
+    parents: ['Mom', 'Dad'],
+    children: ['Sam'],
+    start: '2026-12-24',
+    end: '2026-12-26',
+  });
+  assert.deepEqual(blocks.map((b) => b.parent), ['Mom', 'Dad', 'Mom']);
+  assert.equal(blocks[1].isException, true);
+});
+
+test('all-day DTEND is exclusive (the day after the block ends)', () => {
+  const ics = buildICS({
+    blocks: [{ child: 'Sam', parent: 'Dad', start: '2026-06-05', end: '2026-06-07', entry: null, inferred: true }],
+    parentLocations: {},
+  });
+  assert.match(ics, /DTSTART;VALUE=DATE:20260605/);
+  assert.match(ics, /DTEND;VALUE=DATE:20260608/);
+});
+
+test('escapes commas and semicolons so addresses survive import', () => {
+  assert.equal(escapeICSText("Dad's place, 42 Oak Ave; unit 3"), "Dad's place\\, 42 Oak Ave\\; unit 3");
+  const ics = buildICS({
+    blocks: [{ child: 'Sam', parent: 'Dad', start: '2026-06-05', end: '2026-06-05', entry: null, inferred: false }],
+    parentLocations: { Dad: 'Dad\'s place, 42 Oak Ave' },
+  });
+  assert.match(ics, /LOCATION:Dad's place\\, 42 Oak Ave/);
+});
+
+test('produces a well-formed calendar with CRLF endings and folded long lines', () => {
+  const longNote = 'x'.repeat(200);
+  const ics = buildICS({
+    blocks: [{
+      child: 'Sam', parent: 'Dad', start: '2026-06-05', end: '2026-06-05',
+      entry: { parent: 'Dad', note: longNote }, isException: false, inferred: false,
+    }],
+    parentLocations: {},
+  });
+  assert.ok(ics.startsWith('BEGIN:VCALENDAR\r\n'));
+  assert.ok(ics.trimEnd().endsWith('END:VCALENDAR'));
+  assert.match(ics, /VERSION:2\.0/);
+  // Every physical line must be within the 75-octet limit.
+  for (const line of ics.split('\r\n')) {
+    assert.ok(line.length <= 75, `line too long (${line.length}): ${line.slice(0, 40)}…`);
+  }
+  // Folded continuation lines begin with a space.
+  assert.match(ics, /\r\n x/);
+});
+
+test('names the child only when exporting several children', () => {
+  const block = { child: 'Sam', parent: 'Dad', start: '2026-06-05', end: '2026-06-05', entry: null, inferred: false };
+  assert.match(buildICS({ blocks: [block], parentLocations: {} }), /SUMMARY:Sam with Dad/);
+  assert.match(buildICS({ blocks: [block], parentLocations: {}, singleChild: true }), /SUMMARY:With Dad/);
+});
+
+test('puts exchange details in the event description', () => {
+  const ics = buildICS({
+    blocks: [{
+      child: 'Sam', parent: 'Dad', start: '2026-06-05', end: '2026-06-05',
+      entry: { parent: 'Dad', exchangeTime: '6:00 PM', exchangePlace: 'School' }, inferred: false,
+    }],
+    parentLocations: {},
+  });
+  assert.match(ics, /DESCRIPTION:Exchange time: 6:00 PM\\nExchange place: School/);
 });
