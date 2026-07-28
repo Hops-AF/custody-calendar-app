@@ -259,9 +259,40 @@ function buildICS({ blocks, parentLocations, calendarName = 'Custody Calendar', 
   return lines.map(foldICSLine).join('\r\n') + '\r\n';
 }
 
+// ── Kid view ─────────────────────────────────────────────────────────────────
+
+// Answers "where am I today, and when do I switch?" for one child.
+// `next` is the upcoming block, and its exchange details describe the handoff
+// into that parent's time.
+function getKidView({ entries, parents, children, child, today, daysAhead = 14 }) {
+  const startDate = parseDate(today);
+  if (!startDate) return { current: null, next: null, daysUntilChange: null, upcoming: [] };
+
+  const endDate = new Date(startDate);
+  endDate.setDate(endDate.getDate() + daysAhead);
+
+  const blocks = buildCustodyBlocks({
+    entries,
+    parents,
+    children,
+    start: today,
+    end: formatDate(endDate),
+    childFilter: child || 'all',
+  });
+
+  const current = blocks.find((b) => today >= b.start && today <= b.end) || null;
+  const next = blocks.find((b) => b.start > today) || null;
+  const daysUntilChange = next
+    ? Math.round((parseDate(next.start) - startDate) / 86400000)
+    : null;
+
+  return { current, next, daysUntilChange, upcoming: blocks };
+}
+
 module.exports = {
   buildCustodyBlocks,
   buildICS,
+  getKidView,
   escapeICSText,
   computeCustodySummary,
   enumerateDates,

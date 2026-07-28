@@ -15,6 +15,7 @@ const {
   resolveLocation,
   buildCustodyBlocks,
   buildICS,
+  getKidView,
 } = require('./custody-engine');
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -472,6 +473,131 @@ function CalendarView({ entries, parents, parentColors, children, childColors, o
         <Text style={styles.calHint}>
           Choose a child to see one schedule. Gray means no explicit entry; reporting credits unassigned days to the primary parent.
         </Text>
+      </View>
+    </View>
+  );
+}
+
+// ── KidView ───────────────────────────────────────────────────────────────────
+
+// A read-only, plain-language view for the kids: where they are today, when
+// they switch next, and what the next two weeks look like.
+function KidView({ entries, parents, parentColors, parentLocations, parentPhones, children, childColors }) {
+  const [child, setChild] = useState(children[0] || null);
+  const today = localTodayStr();
+
+  // Keep the selection valid if children change underneath us.
+  const activeChild = children.includes(child) ? child : (children[0] || null);
+
+  const view = getKidView({ entries, parents, children, child: activeChild, today, daysAhead: 14 });
+  const colorFor = (parent) => colorForName(parent, parents, parentColors);
+
+  const weekday = (ds) => {
+    const d = toDate(ds);
+    return d ? d.toLocaleDateString('en-US', { weekday: 'long' }) : '';
+  };
+  const shortDate = (ds) => {
+    const d = toDate(ds);
+    return d ? d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
+  };
+  const countdown = (n) => (n === 0 ? 'today' : n === 1 ? 'tomorrow' : `in ${n} days`);
+
+  if (parents.length === 0) {
+    return (
+      <View style={styles.card}>
+        <Text style={styles.kidEmpty}>Add parents and a schedule first, then this view will show where you are.</Text>
+      </View>
+    );
+  }
+
+  const currentColor = view.current ? colorFor(view.current.parent) : '#9ca3af';
+  const currentLocation = view.current
+    ? (resolveLocation(view.current.entry, parentLocations) || parentLocations[view.current.parent] || '')
+    : '';
+  const currentPhone = view.current ? (parentPhones[view.current.parent] || '') : '';
+
+  return (
+    <View>
+      {/* Which kid */}
+      {children.length > 1 && (
+        <View style={[styles.chipRow, { justifyContent: 'center', marginBottom: 12 }]}>
+          {children.map((c) => {
+            const active = c === activeChild;
+            const cc = colorForName(c, children, childColors);
+            return (
+              <TouchableOpacity
+                key={c}
+                style={[styles.chip, active && { backgroundColor: cc, borderColor: cc }]}
+                onPress={() => setChild(c)}
+                accessibilityRole="button"
+                accessibilityState={{ selected: active }}
+              >
+                <Text style={[styles.chipText, active && styles.chipTextActive]}>{c}</Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      )}
+
+      {/* Today */}
+      <View style={[styles.kidTodayCard, { backgroundColor: currentColor }]}>
+        <Text style={styles.kidTodayLabel}>TODAY</Text>
+        <Text style={styles.kidTodayWho}>
+          {view.current ? `You're with ${view.current.parent}` : 'No schedule for today'}
+        </Text>
+        {view.current && view.current.isException && view.current.entry && view.current.entry.note ? (
+          <Text style={styles.kidTodayMeta}>🎁 {view.current.entry.note}</Text>
+        ) : null}
+        {currentLocation ? <Text style={styles.kidTodayMeta}>📍 {currentLocation}</Text> : null}
+        {currentPhone ? <Text style={styles.kidTodayMeta}>📞 {currentPhone}</Text> : null}
+        {view.current ? (
+          <Text style={styles.kidTodayMeta}>Until {weekday(view.current.end)}, {shortDate(view.current.end)}</Text>
+        ) : null}
+      </View>
+
+      {/* Next switch */}
+      {view.next ? (
+        <View style={styles.card}>
+          <Text style={styles.fieldLabel}>Next switch</Text>
+          <Text style={styles.kidNextWho}>
+            You go to <Text style={{ color: colorFor(view.next.parent), fontWeight: '800' }}>{view.next.parent}</Text>
+          </Text>
+          <Text style={styles.kidNextWhen}>
+            {weekday(view.next.start)}, {shortDate(view.next.start)} · {countdown(view.daysUntilChange)}
+          </Text>
+          {view.next.entry && view.next.entry.exchangeTime ? (
+            <Text style={styles.kidNextMeta}>🕕 {view.next.entry.exchangeTime}</Text>
+          ) : null}
+          {view.next.entry && view.next.entry.exchangePlace ? (
+            <Text style={styles.kidNextMeta}>🚗 Meet at {view.next.entry.exchangePlace}</Text>
+          ) : null}
+        </View>
+      ) : (
+        <View style={styles.card}>
+          <Text style={styles.fieldLabel}>Next switch</Text>
+          <Text style={styles.kidNextMeta}>No switch in the next two weeks.</Text>
+        </View>
+      )}
+
+      {/* Next two weeks */}
+      <View style={styles.card}>
+        <Text style={styles.fieldLabel}>Next two weeks</Text>
+        {view.upcoming.length === 0 && (
+          <Text style={styles.kidEmpty}>Nothing scheduled yet.</Text>
+        )}
+        {view.upcoming.map((b, i) => (
+          <View key={`${b.parent}-${b.start}-${i}`} style={styles.kidRow}>
+            <View style={[styles.kidRowBar, { backgroundColor: colorFor(b.parent) }]} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.kidRowWho}>{b.parent}{b.isException ? ' 🎁' : ''}</Text>
+              <Text style={styles.kidRowWhen}>
+                {b.start === b.end
+                  ? `${weekday(b.start)}, ${shortDate(b.start)}`
+                  : `${shortDate(b.start)} – ${shortDate(b.end)}`}
+              </Text>
+            </View>
+          </View>
+        ))}
       </View>
     </View>
   );
@@ -1288,7 +1414,7 @@ export default function App() {
 
           {/* View toggle */}
           <View style={styles.segment}>
-            {[{ id: 'list', label: 'Entries' }, { id: 'calendar', label: 'Calendar' }].map((m) => (
+            {[{ id: 'list', label: 'Entries' }, { id: 'calendar', label: 'Calendar' }, { id: 'kid', label: 'Kid View' }].map((m) => (
               <TouchableOpacity
                 key={m.id}
                 style={[styles.segmentBtn, viewMode === m.id && styles.segmentBtnActive]}
@@ -1301,7 +1427,17 @@ export default function App() {
             ))}
           </View>
 
-          {viewMode === 'calendar' ? (
+          {viewMode === 'kid' ? (
+            <KidView
+              entries={entries}
+              parents={parents}
+              parentColors={parentColors}
+              parentLocations={parentLocations}
+              parentPhones={parentPhones}
+              children={children}
+              childColors={childColors}
+            />
+          ) : viewMode === 'calendar' ? (
             <CalendarView entries={entries} parents={parents} parentColors={parentColors} children={children} childColors={childColors} onCreateEntry={createEntryFromCalendar} />
           ) : (
           <>
@@ -2068,6 +2204,29 @@ const styles = StyleSheet.create({
   chipTextActive: { color: '#fff', fontWeight: '600' },
 
   windowInfo: { fontSize: 13, color: '#6b7280', marginTop: 6 },
+
+  // Kid view
+  kidTodayCard: {
+    borderRadius: 16,
+    padding: 22,
+    marginBottom: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.12,
+    shadowRadius: 6,
+    elevation: 3,
+  },
+  kidTodayLabel: { color: 'rgba(255,255,255,0.85)', fontSize: 12, fontWeight: '700', letterSpacing: 1.5, marginBottom: 4 },
+  kidTodayWho: { color: '#fff', fontSize: 28, fontWeight: '800', marginBottom: 8 },
+  kidTodayMeta: { color: 'rgba(255,255,255,0.95)', fontSize: 15, marginTop: 3 },
+  kidNextWho: { fontSize: 20, fontWeight: '700', color: '#111827', marginTop: 2 },
+  kidNextWhen: { fontSize: 15, color: '#374151', marginTop: 3 },
+  kidNextMeta: { fontSize: 15, color: '#4b5563', marginTop: 6 },
+  kidEmpty: { fontSize: 15, color: '#6b7280', lineHeight: 21 },
+  kidRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 9 },
+  kidRowBar: { width: 6, height: 34, borderRadius: 3, marginRight: 12 },
+  kidRowWho: { fontSize: 16, fontWeight: '600', color: '#111827' },
+  kidRowWhen: { fontSize: 13, color: '#6b7280', marginTop: 1 },
 
   // View toggle (segmented control)
   segment: { flexDirection: 'row', backgroundColor: '#e5e7eb', borderRadius: 10, padding: 3, marginBottom: 12 },

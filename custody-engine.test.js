@@ -9,6 +9,7 @@ const {
   buildCustodyBlocks,
   buildICS,
   escapeICSText,
+  getKidView,
 } = require('./custody-engine');
 
 function entry(parent, beginDate, endDate, children) {
@@ -271,4 +272,61 @@ test('puts exchange details in the event description', () => {
     parentLocations: {},
   });
   assert.match(ics, /DESCRIPTION:Exchange time: 6:00 PM\\nExchange place: School/);
+});
+
+// ── Kid view ─────────────────────────────────────────────────────────────────
+
+test('kid view reports who today is with and when the next switch happens', () => {
+  const entries = [
+    entry('Mom', '2026-06-01', '2026-06-04', ['Sam']),
+    entry('Dad', '2026-06-05', '2026-06-07', ['Sam']),
+  ];
+  const view = getKidView({
+    entries, parents: ['Mom', 'Dad'], children: ['Sam'],
+    child: 'Sam', today: '2026-06-02',
+  });
+  assert.equal(view.current.parent, 'Mom');
+  assert.equal(view.next.parent, 'Dad');
+  assert.equal(view.next.start, '2026-06-05');
+  assert.equal(view.daysUntilChange, 3);
+});
+
+test('kid view surfaces the exchange details of the upcoming handoff', () => {
+  const entries = [
+    entry('Mom', '2026-06-01', '2026-06-04', ['Sam']),
+    { ...entry('Dad', '2026-06-05', '2026-06-07', ['Sam']), exchangeTime: '6:00 PM', exchangePlace: 'School' },
+  ];
+  const view = getKidView({
+    entries, parents: ['Mom', 'Dad'], children: ['Sam'],
+    child: 'Sam', today: '2026-06-04',
+  });
+  assert.equal(view.daysUntilChange, 1);
+  assert.equal(view.next.entry.exchangeTime, '6:00 PM');
+  assert.equal(view.next.entry.exchangePlace, 'School');
+});
+
+test('kid view only follows the selected child when siblings differ', () => {
+  const entries = [
+    entry('Mom', '2026-06-01', '2026-06-07', ['Sam']),
+    entry('Dad', '2026-06-01', '2026-06-07', ['Alex']),
+  ];
+  const base = { entries, parents: ['Mom', 'Dad'], children: ['Sam', 'Alex'], today: '2026-06-02' };
+  assert.equal(getKidView({ ...base, child: 'Sam' }).current.parent, 'Mom');
+  assert.equal(getKidView({ ...base, child: 'Alex' }).current.parent, 'Dad');
+});
+
+test('kid view reports no upcoming switch when one parent has the whole window', () => {
+  const view = getKidView({
+    entries: [entry('Mom', '2026-06-01', '2026-07-30', ['Sam'])],
+    parents: ['Mom', 'Dad'], children: ['Sam'],
+    child: 'Sam', today: '2026-06-02', daysAhead: 14,
+  });
+  assert.equal(view.current.parent, 'Mom');
+  assert.equal(view.next, null);
+  assert.equal(view.daysUntilChange, null);
+});
+
+test('kid view degrades gracefully on a bad date', () => {
+  const view = getKidView({ entries: [], parents: [], children: [], child: null, today: 'nonsense' });
+  assert.deepEqual(view, { current: null, next: null, daysUntilChange: null, upcoming: [] });
 });
