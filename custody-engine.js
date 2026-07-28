@@ -39,6 +39,14 @@ function entryCoversChild(entry, dateStr, child) {
   return Boolean(entry.childrenPresent && entry.childrenPresent[child]);
 }
 
+// Where the child stays for this entry: an entry-level override wins, else the
+// parent's default address.
+function resolveLocation(entry, parentLocations) {
+  if (!entry) return '';
+  if (entry.location) return entry.location;
+  return (parentLocations && parentLocations[entry.parent]) || '';
+}
+
 function getChildDayState(dateStr, entries, child) {
   const covering = entries.filter((entry) => entryCoversChild(entry, dateStr, child));
   // Holiday/exception entries override the recurring schedule: when any
@@ -48,9 +56,14 @@ function getChildDayState(dateStr, entries, child) {
   const isException = exceptions.length > 0;
   const parents = [...new Set(pool.map((entry) => entry.parent))];
 
-  if (parents.length === 0) return { type: 'unassigned', child, parent: null, parents: [], isException: false };
-  if (parents.length === 1) return { type: 'single', child, parent: parents[0], parents, isException };
-  return { type: 'conflict', child, parent: null, parents, isException };
+  if (parents.length === 0) {
+    return { type: 'unassigned', child, parent: null, parents: [], isException: false, entry: null };
+  }
+  if (parents.length === 1) {
+    // `entry` is the deciding entry, so callers can read location/exchange details.
+    return { type: 'single', child, parent: parents[0], parents, isException, entry: pool[0] };
+  }
+  return { type: 'conflict', child, parent: null, parents, isException, entry: null };
 }
 
 function getCalendarDayState(dateStr, entries, children, childFilter) {
@@ -122,4 +135,5 @@ module.exports = {
   getCalendarDayState,
   getChildDayState,
   parseDate,
+  resolveLocation,
 };

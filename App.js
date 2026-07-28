@@ -9,7 +9,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
-const { computeCustodySummary, getCalendarDayState } = require('./custody-engine');
+const { computeCustodySummary, getCalendarDayState, resolveLocation } = require('./custody-engine');
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -806,6 +806,8 @@ export default function App() {
   const [children, setChildren] = useState([]);
   const [parentColors, setParentColors] = useState({});
   const [childColors, setChildColors] = useState({});
+  const [parentLocations, setParentLocations] = useState({}); // parent -> home address
+  const [parentPhones, setParentPhones] = useState({});       // parent -> contact number
   const [colorPicker, setColorPicker] = useState(null); // { type: 'parent'|'child', name }
   const [entries, setEntries] = useState([
     { id: generateId(), parent: '', beginDate: '', endDate: '', childrenPresent: {}, note: '' },
@@ -856,6 +858,8 @@ export default function App() {
         if (data.parents) setParents(data.parents);
         if (data.children) setChildren(data.children);
         if (data.parentColors) setParentColors(data.parentColors);
+        if (data.parentLocations) setParentLocations(data.parentLocations);
+        if (data.parentPhones) setParentPhones(data.parentPhones);
         if (data.childColors) setChildColors(data.childColors);
         if (data.entries) setEntries(data.entries);
         if (data.scheduleAssignments) setScheduleAssignments(data.scheduleAssignments);
@@ -887,8 +891,8 @@ export default function App() {
 
   useEffect(() => {
     if (!loaded) return;
-    saveData({ parents, children, parentColors, childColors, entries, scheduleAssignments, reportingMode, customStart, customEnd, quarterYear, quarter, preset, analysisChild, viewMode });
-  }, [loaded, parents, children, parentColors, childColors, entries, scheduleAssignments, reportingMode, customStart, customEnd, quarterYear, quarter, preset, analysisChild, viewMode]);
+    saveData({ parents, children, parentColors, childColors, parentLocations, parentPhones, entries, scheduleAssignments, reportingMode, customStart, customEnd, quarterYear, quarter, preset, analysisChild, viewMode });
+  }, [loaded, parents, children, parentColors, childColors, parentLocations, parentPhones, entries, scheduleAssignments, reportingMode, customStart, customEnd, quarterYear, quarter, preset, analysisChild, viewMode]);
 
   // ── config ───────────────────────────────────────────────────────────────────
 
@@ -908,6 +912,8 @@ export default function App() {
         text: 'Remove', style: 'destructive', onPress: () => {
           setParents(parents.filter((p) => p !== parent));
           const nc = { ...parentColors }; delete nc[parent]; setParentColors(nc);
+          const nl = { ...parentLocations }; delete nl[parent]; setParentLocations(nl);
+          const np = { ...parentPhones }; delete np[parent]; setParentPhones(np);
         },
       },
     ]);
@@ -1009,6 +1015,8 @@ export default function App() {
             setChildren([]);
             setParentColors({});
             setChildColors({});
+            setParentLocations({});
+            setParentPhones({});
             setEntries([{ id: generateId(), parent: '', beginDate: '', endDate: '', childrenPresent: {}, note: '' }]);
             setScheduleAssignments([]);
             setReportingMode('custom');
@@ -1132,11 +1140,14 @@ export default function App() {
       };
       const csvRow = (arr) => arr.map(esc).join(',');
 
-      const headers = ['Parent', 'Begin Date', 'End Date', 'Custody Days', 'Type', ...children, 'Note'];
+      const headers = ['Parent', 'Begin Date', 'End Date', 'Custody Days', 'Type', 'Where', 'Exchange Time', 'Exchange Place', ...children, 'Note'];
       const rows = entries.map((e) => [
         e.parent, e.beginDate, e.endDate,
         daysInclusive(e.beginDate, e.endDate) ?? '',
         e.isException ? 'Holiday' : 'Schedule',
+        resolveLocation(e, parentLocations),
+        e.exchangeTime || '',
+        e.exchangePlace || '',
         ...children.map((c) => (e.childrenPresent[c] ? 'Yes' : 'No')),
         e.note,
       ]);
@@ -1284,6 +1295,36 @@ export default function App() {
                     <Text style={styles.btnText}>Add</Text>
                   </TouchableOpacity>
                 </View>
+
+                {/* Where each parent lives — used as the default location for their days */}
+                {parents.length > 0 && (
+                  <View style={{ marginTop: 14 }}>
+                    <Text style={styles.fieldLabel}>Home & contact</Text>
+                    <Text style={styles.calHint}>Used as the default place for each parent's days, so the kids know where they'll be.</Text>
+                    {parents.map((p) => (
+                      <View key={p} style={styles.detailBlock}>
+                        <View style={styles.detailHeader}>
+                          <View style={[styles.tagSwatch, { backgroundColor: colorForName(p, parents, parentColors) }]} />
+                          <Text style={styles.detailName}>{p}</Text>
+                        </View>
+                        <TextInput
+                          style={[styles.input, { marginBottom: 6 }]}
+                          value={parentLocations[p] || ''}
+                          onChangeText={(v) => setParentLocations({ ...parentLocations, [p]: v })}
+                          placeholder="Home address"
+                          autoCapitalize="words"
+                        />
+                        <TextInput
+                          style={styles.input}
+                          value={parentPhones[p] || ''}
+                          onChangeText={(v) => setParentPhones({ ...parentPhones, [p]: v })}
+                          placeholder="Phone (optional)"
+                          keyboardType="phone-pad"
+                        />
+                      </View>
+                    ))}
+                  </View>
+                )}
 
                 {/* Children */}
                 <Text style={[styles.fieldLabel, { marginTop: 16 }]}>Children</Text>
@@ -1555,6 +1596,34 @@ export default function App() {
                     ))}
                   </View>
                 )}
+
+                {/* Where the child stays */}
+                <Text style={[styles.fieldLabel, { marginTop: 10 }]}>Where</Text>
+                <TextInput
+                  style={styles.input}
+                  value={entry.location || ''}
+                  onChangeText={(v) => updateEntry(entry.id, 'location', v)}
+                  placeholder={entry.parent && parentLocations[entry.parent] ? parentLocations[entry.parent] : 'Location (defaults to parent’s home)'}
+                  autoCapitalize="words"
+                />
+
+                {/* Exchange / handoff */}
+                <Text style={[styles.fieldLabel, { marginTop: 10 }]}>Exchange</Text>
+                <View style={styles.dateRow}>
+                  <TextInput
+                    style={[styles.input, { flex: 1 }]}
+                    value={entry.exchangeTime || ''}
+                    onChangeText={(v) => updateEntry(entry.id, 'exchangeTime', v)}
+                    placeholder="Time (e.g. 6:00 PM)"
+                  />
+                  <TextInput
+                    style={[styles.input, { flex: 1 }]}
+                    value={entry.exchangePlace || ''}
+                    onChangeText={(v) => updateEntry(entry.id, 'exchangePlace', v)}
+                    placeholder="Place (e.g. School)"
+                    autoCapitalize="words"
+                  />
+                </View>
 
                 {/* Note */}
                 <Text style={[styles.fieldLabel, { marginTop: 10 }]}>Note</Text>
@@ -1851,6 +1920,9 @@ const styles = StyleSheet.create({
   },
   tagText: { fontSize: 13, color: '#1d4ed8', marginRight: 4 },
   tagSwatch: { width: 14, height: 14, borderRadius: 4, marginRight: 6, borderWidth: 1, borderColor: 'rgba(0,0,0,0.15)' },
+  detailBlock: { backgroundColor: '#f9fafb', borderRadius: 8, padding: 10, marginTop: 8 },
+  detailHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 6 },
+  detailName: { fontSize: 14, fontWeight: '600', color: '#111827' },
   tagStar: { fontSize: 15, color: '#6b7280', marginRight: 4 },
   tagX: { fontSize: 18, color: '#dc2626', lineHeight: 20 },
   swatchGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, padding: 16 },

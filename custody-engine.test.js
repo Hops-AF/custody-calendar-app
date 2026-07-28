@@ -5,6 +5,7 @@ const {
   enumerateDates,
   getCalendarDayState,
   getChildDayState,
+  resolveLocation,
 } = require('./custody-engine');
 
 function entry(parent, beginDate, endDate, children) {
@@ -118,6 +119,35 @@ test('reporting credits the holiday parent, not the base schedule', () => {
     { parent: 'Mom', custodyDays: 2, percentage: 66.7 },
     { parent: 'Dad', custodyDays: 1, percentage: 33.3 },
   ]);
+});
+
+test('location falls back to the parent default address', () => {
+  const parentLocations = { Mom: "Mom's house, 1 Elm St" };
+  const e = entry('Mom', '2026-06-10', '2026-06-10', ['Sam']);
+  assert.equal(resolveLocation(e, parentLocations), "Mom's house, 1 Elm St");
+});
+
+test('an entry-level location overrides the parent default', () => {
+  const parentLocations = { Mom: "Mom's house, 1 Elm St" };
+  const e = { ...entry('Mom', '2026-06-10', '2026-06-10', ['Sam']), location: 'Grandma’s cabin' };
+  assert.equal(resolveLocation(e, parentLocations), 'Grandma’s cabin');
+});
+
+test('an assigned day exposes the deciding entry so callers can read exchange details', () => {
+  const base = entry('Mom', '2026-12-24', '2026-12-26', ['Sam']);
+  const override = { ...holiday('Dad', '2026-12-25', '2026-12-25', ['Sam']), exchangeTime: '10:00 AM', exchangePlace: 'Library' };
+  const state = getChildDayState('2026-12-25', [base, override], 'Sam');
+  assert.equal(state.entry.exchangePlace, 'Library');
+  assert.equal(state.entry.exchangeTime, '10:00 AM');
+});
+
+test('unassigned and conflicting days expose no deciding entry', () => {
+  assert.equal(getChildDayState('2026-06-10', [], 'Sam').entry, null);
+  const conflicting = [
+    entry('Mom', '2026-06-10', '2026-06-10', ['Sam']),
+    entry('Dad', '2026-06-10', '2026-06-10', ['Sam']),
+  ];
+  assert.equal(getChildDayState('2026-06-10', conflicting, 'Sam').entry, null);
 });
 
 test('excludes conflicting child-days and reports them', () => {
