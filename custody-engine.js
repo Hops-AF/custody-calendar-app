@@ -289,9 +289,212 @@ function getKidView({ entries, parents, children, child, today, daysAhead = 14 }
   return { current, next, daysUntilChange, upcoming: blocks };
 }
 
+// ── Shareable kid page ───────────────────────────────────────────────────────
+
+function escapeHtml(value) {
+  return String(value == null ? '' : value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+// Serialise the real engine functions into the shared page so it uses the same
+// tested logic rather than a drifting copy.
+function kidEngineSource() {
+  return [
+    pad2, parseDate, formatDate, enumerateDates, entryCoversChild,
+    getChildDayState, buildCustodyBlocks, getKidView, resolveLocation,
+  ].map((fn) => fn.toString()).join('\n\n');
+}
+
+// A self-contained HTML page for a child: no network, no CDN, no editing.
+// The schedule data is embedded and re-evaluated each time it is opened, so it
+// stays correct as days pass (within the exported window).
+function buildKidPage({ entries, parents, children, parentColors, parentLocations, parentPhones, validFrom, validTo, generatedOn }) {
+  const data = {
+    entries, parents, children, parentColors, parentLocations, parentPhones,
+    validFrom, validTo, generatedOn,
+  };
+  // Guard against "</script>" inside any string field breaking out of the tag.
+  const json = JSON.stringify(data).replace(/</g, '\\u003c');
+  const title = children && children.length ? `${children.join(' & ')} — Schedule` : 'Custody Schedule';
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escapeHtml(title)}</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:16px; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+         background:#f4f5f7; color:#111827; -webkit-font-smoothing:antialiased; }
+  .wrap { max-width:520px; margin:0 auto; }
+  h1 { font-size:1.15rem; margin:0 0 12px; color:#374151; }
+  .tabs { display:flex; flex-wrap:wrap; gap:6px; justify-content:center; margin-bottom:12px; }
+  .tab { border:none; border-radius:999px; padding:8px 16px; font-size:0.95rem; cursor:pointer;
+         background:#e5e7eb; color:#374151; }
+  .tab[aria-pressed="true"] { color:#fff; font-weight:700; }
+  .today { border-radius:16px; padding:22px; color:#fff; margin-bottom:12px; }
+  .today .label { font-size:0.72rem; letter-spacing:.14em; font-weight:700; opacity:.85; }
+  .today .who { font-size:1.85rem; font-weight:800; margin:4px 0 10px; line-height:1.15; }
+  .today .meta { font-size:1rem; margin-top:4px; }
+  .card { background:#fff; border-radius:14px; padding:16px; margin-bottom:12px;
+          box-shadow:0 1px 3px rgba(0,0,0,.08); }
+  .card h2 { font-size:.72rem; letter-spacing:.1em; text-transform:uppercase; color:#6b7280; margin:0 0 8px; }
+  .next-who { font-size:1.25rem; font-weight:700; }
+  .next-when { color:#374151; margin-top:3px; }
+  .next-meta { color:#4b5563; margin-top:6px; }
+  .row { display:flex; align-items:center; padding:8px 0; }
+  .bar { width:6px; height:34px; border-radius:3px; margin-right:12px; flex:none; }
+  .row .name { font-weight:600; }
+  .row .when { font-size:.85rem; color:#6b7280; }
+  .foot { text-align:center; color:#6b7280; font-size:.8rem; margin-top:16px; line-height:1.5; }
+  .warn { background:#fef3c7; border:1px solid #f59e0b; color:#92400e; border-radius:12px;
+          padding:12px 14px; margin-bottom:12px; font-size:.9rem; }
+  @media (prefers-color-scheme: dark) {
+    body { background:#0f1115; color:#e5e7eb; }
+    .card { background:#1a1d24; box-shadow:none; }
+    h1, .next-who { color:#e5e7eb; }
+    .next-when, .next-meta, .row .when, .foot { color:#9ca3af; }
+    .tab { background:#272b33; color:#d1d5db; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>${escapeHtml(title)}</h1>
+  <div id="tabs" class="tabs"></div>
+  <div id="app"></div>
+  <div class="foot" id="foot"></div>
+</div>
+<script>
+const DATA = ${json};
+
+${kidEngineSource()}
+
+var COLOR_FALLBACK = ['#2563eb','#16a34a','#d97706','#7c3aed','#db2777','#0d9488'];
+function colorFor(name, list, overrides) {
+  if (overrides && overrides[name]) return overrides[name];
+  var i = list.indexOf(name);
+  return i >= 0 ? COLOR_FALLBACK[i % COLOR_FALLBACK.length] : '#9ca3af';
+}
+function todayStr() {
+  var d = new Date();
+  return d.getFullYear() + '-' + pad2(d.getMonth()+1) + '-' + pad2(d.getDate());
+}
+function fmt(ds, opts) {
+  var d = parseDate(ds);
+  return d ? d.toLocaleDateString('en-US', opts) : '';
+}
+var weekday = function (ds) { return fmt(ds, { weekday:'long' }); };
+var shortDate = function (ds) { return fmt(ds, { month:'short', day:'numeric' }); };
+function countdown(n) { return n === 0 ? 'today' : n === 1 ? 'tomorrow' : 'in ' + n + ' days'; }
+function esc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+var active = (DATA.children && DATA.children[0]) || null;
+
+function render() {
+  var today = todayStr();
+  var app = document.getElementById('app');
+  var html = '';
+
+  if (DATA.validTo && today > DATA.validTo) {
+    html += '<div class="warn">This schedule ended on ' + esc(shortDate(DATA.validTo)) +
+            '. Ask for an updated one.</div>';
+  } else if (DATA.validFrom && today < DATA.validFrom) {
+    html += '<div class="warn">This schedule starts ' + esc(shortDate(DATA.validFrom)) + '.</div>';
+  }
+
+  var view = getKidView({
+    entries: DATA.entries, parents: DATA.parents, children: DATA.children,
+    child: active, today: today, daysAhead: 14
+  });
+
+  var col = view.current ? colorFor(view.current.parent, DATA.parents, DATA.parentColors) : '#9ca3af';
+  var loc = view.current
+    ? (resolveLocation(view.current.entry, DATA.parentLocations) ||
+       (DATA.parentLocations && DATA.parentLocations[view.current.parent]) || '')
+    : '';
+  var phone = view.current ? ((DATA.parentPhones && DATA.parentPhones[view.current.parent]) || '') : '';
+
+  html += '<div class="today" style="background:' + esc(col) + '">' +
+          '<div class="label">TODAY</div><div class="who">' +
+          (view.current ? "You're with " + esc(view.current.parent) : 'No schedule for today') +
+          '</div>';
+  if (view.current && view.current.isException && view.current.entry && view.current.entry.note)
+    html += '<div class="meta">\\uD83C\\uDF81 ' + esc(view.current.entry.note) + '</div>';
+  if (loc) html += '<div class="meta">\\uD83D\\uDCCD ' + esc(loc) + '</div>';
+  if (phone) html += '<div class="meta">\\uD83D\\uDCDE <a style="color:inherit" href="tel:' +
+                     esc(phone.replace(/[^0-9+]/g,'')) + '">' + esc(phone) + '</a></div>';
+  if (view.current) html += '<div class="meta">Until ' + esc(weekday(view.current.end)) + ', ' +
+                            esc(shortDate(view.current.end)) + '</div>';
+  html += '</div>';
+
+  html += '<div class="card"><h2>Next switch</h2>';
+  if (view.next) {
+    html += '<div class="next-who">You go to <span style="color:' +
+            esc(colorFor(view.next.parent, DATA.parents, DATA.parentColors)) + '">' +
+            esc(view.next.parent) + '</span></div>' +
+            '<div class="next-when">' + esc(weekday(view.next.start)) + ', ' +
+            esc(shortDate(view.next.start)) + ' &middot; ' + esc(countdown(view.daysUntilChange)) + '</div>';
+    if (view.next.entry && view.next.entry.exchangeTime)
+      html += '<div class="next-meta">\\uD83D\\uDD55 ' + esc(view.next.entry.exchangeTime) + '</div>';
+    if (view.next.entry && view.next.entry.exchangePlace)
+      html += '<div class="next-meta">\\uD83D\\uDE97 Meet at ' + esc(view.next.entry.exchangePlace) + '</div>';
+  } else {
+    html += '<div class="next-meta">No switch in the next two weeks.</div>';
+  }
+  html += '</div>';
+
+  html += '<div class="card"><h2>Next two weeks</h2>';
+  if (!view.upcoming.length) html += '<div class="next-meta">Nothing scheduled.</div>';
+  view.upcoming.forEach(function (b) {
+    html += '<div class="row"><span class="bar" style="background:' +
+            esc(colorFor(b.parent, DATA.parents, DATA.parentColors)) + '"></span><div><div class="name">' +
+            esc(b.parent) + (b.isException ? ' \\uD83C\\uDF81' : '') + '</div><div class="when">' +
+            (b.start === b.end
+              ? esc(weekday(b.start)) + ', ' + esc(shortDate(b.start))
+              : esc(shortDate(b.start)) + ' \\u2013 ' + esc(shortDate(b.end))) +
+            '</div></div></div>';
+  });
+  html += '</div>';
+
+  app.innerHTML = html;
+  document.getElementById('foot').textContent =
+    'Schedule shared on ' + shortDate(DATA.generatedOn) + '. Ask a parent for an updated copy.';
+}
+
+function renderTabs() {
+  var el = document.getElementById('tabs');
+  el.innerHTML = '';
+  if (!DATA.children || DATA.children.length < 2) { el.style.display = 'none'; return; }
+  DATA.children.forEach(function (c) {
+    var b = document.createElement('button');
+    b.className = 'tab';
+    b.textContent = c;
+    b.setAttribute('aria-pressed', String(c === active));
+    if (c === active) b.style.background = colorFor(c, DATA.children, {});
+    b.onclick = function () { active = c; renderTabs(); render(); };
+    el.appendChild(b);
+  });
+}
+function boot() { renderTabs(); render(); }
+boot();
+</script>
+</body>
+</html>`;
+}
+
 module.exports = {
   buildCustodyBlocks,
   buildICS,
+  buildKidPage,
   getKidView,
   escapeICSText,
   computeCustodySummary,

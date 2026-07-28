@@ -10,6 +10,7 @@ const {
   buildICS,
   escapeICSText,
   getKidView,
+  buildKidPage,
 } = require('./custody-engine');
 
 function entry(parent, beginDate, endDate, children) {
@@ -329,4 +330,62 @@ test('kid view reports no upcoming switch when one parent has the whole window',
 test('kid view degrades gracefully on a bad date', () => {
   const view = getKidView({ entries: [], parents: [], children: [], child: null, today: 'nonsense' });
   assert.deepEqual(view, { current: null, next: null, daysUntilChange: null, upcoming: [] });
+});
+
+// ── Shareable kid page ───────────────────────────────────────────────────────
+
+function samplePage(overrides = {}) {
+  return buildKidPage({
+    entries: [entry('Dad', '2026-06-05', '2026-06-07', ['Sam'])],
+    parents: ['Mom', 'Dad'],
+    children: ['Sam'],
+    parentColors: { Mom: '#2563eb', Dad: '#16a34a' },
+    parentLocations: { Dad: "Dad's place, 42 Oak Ave" },
+    parentPhones: { Dad: '555-0199' },
+    validFrom: '2026-06-01',
+    validTo: '2026-12-31',
+    generatedOn: '2026-06-01',
+    ...overrides,
+  });
+}
+
+test('kid page is fully self-contained (no network requests)', () => {
+  const html = samplePage();
+  assert.ok(html.startsWith('<!DOCTYPE html>'));
+  // No CDN scripts, stylesheets, or remote images.
+  assert.equal(/<script[^>]+src=/i.test(html), false);
+  assert.equal(/<link[^>]+href=/i.test(html), false);
+  assert.equal(/https?:\/\//i.test(html), false);
+});
+
+test('kid page embeds the schedule and the real engine logic', () => {
+  const html = samplePage();
+  assert.match(html, /function getKidView/);
+  assert.match(html, /function buildCustodyBlocks/);
+  assert.match(html, /function getChildDayState/);
+  assert.match(html, /"parents":\["Mom","Dad"\]/);
+  assert.match(html, /Dad's place/);
+});
+
+test('kid page escapes HTML in names so titles cannot inject markup', () => {
+  const html = buildKidPage({
+    entries: [], parents: ['Mom'], children: ['<img src=x onerror=alert(1)>'],
+    parentColors: {}, parentLocations: {}, parentPhones: {},
+    validFrom: '2026-06-01', validTo: '2026-12-31', generatedOn: '2026-06-01',
+  });
+  assert.equal(html.includes('<img src=x'), false);
+  assert.match(html, /&lt;img src=x/);
+});
+
+test('kid page neutralises a closing script tag hidden in the data', () => {
+  const html = buildKidPage({
+    entries: [{ parent: 'Dad', beginDate: '2026-06-05', endDate: '2026-06-05',
+                childrenPresent: { Sam: true }, note: '</script><script>alert(1)</script>' }],
+    parents: ['Mom', 'Dad'], children: ['Sam'],
+    parentColors: {}, parentLocations: {}, parentPhones: {},
+    validFrom: '2026-06-01', validTo: '2026-12-31', generatedOn: '2026-06-01',
+  });
+  // The literal closing tag must not survive inside the embedded JSON.
+  assert.equal(html.includes('</script><script>alert(1)'), false);
+  assert.match(html, /\\u003c\/script/);
 });

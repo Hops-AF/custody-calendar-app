@@ -15,6 +15,7 @@ const {
   resolveLocation,
   buildCustodyBlocks,
   buildICS,
+  buildKidPage,
   getKidView,
 } = require('./custody-engine');
 
@@ -1356,6 +1357,36 @@ export default function App() {
     }
   };
 
+  // Send the kids a standalone page they can open on their own phone.
+  const exportKidPage = async () => {
+    try {
+      if (parents.length === 0) {
+        Alert.alert('Nothing to share', 'Add parents and a schedule first.');
+        return;
+      }
+      const from = localTodayStr();
+      const to = reportingWindow.end && reportingWindow.end > from
+        ? reportingWindow.end
+        : (() => { const d = toDate(from); d.setFullYear(d.getFullYear() + 1); return formatDateStr(d); })();
+
+      const html = buildKidPage({
+        entries, parents, children, parentColors, parentLocations, parentPhones,
+        validFrom: from, validTo: to, generatedOn: from,
+      });
+
+      const safe = (children.length ? children.join('_') : 'Schedule').replace(/[^A-Za-z0-9]+/g, '_');
+      const path = FileSystem.documentDirectory + `${safe}_Schedule.html`;
+      await FileSystem.writeAsStringAsync(path, html, { encoding: FileSystem.EncodingType.UTF8 });
+      await Sharing.shareAsync(path, {
+        mimeType: 'text/html',
+        UTI: 'public.html',
+        dialogTitle: 'Send schedule to the kids',
+      });
+    } catch (e) {
+      Alert.alert('Share Failed', e.message);
+    }
+  };
+
   // ── date picker ──────────────────────────────────────────────────────────────
 
   const openDatePicker = (context, field, currentStr) => {
@@ -1570,6 +1601,9 @@ export default function App() {
             </TouchableOpacity>
             <TouchableOpacity style={styles.btnSuccess} onPress={exportICS}>
               <Text style={styles.btnText}>📅 Share Calendar</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.btnSuccess} onPress={exportKidPage}>
+              <Text style={styles.btnText}>👧 Send to Kids</Text>
             </TouchableOpacity>
             <TouchableOpacity style={styles.btnSuccess} onPress={exportCSV}>
               <Text style={styles.btnText}>Export CSV</Text>
