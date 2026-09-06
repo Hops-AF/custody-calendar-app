@@ -18,6 +18,15 @@ function formatDate(date) {
   return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
 }
 
+function daysInclusive(start, end) {
+  const first = parseDate(start);
+  const last = parseDate(end);
+  if (!first || !last || last < first) return null;
+  // Normalize calendar dates to UTC so DST cannot shorten or lengthen a day.
+  const ordinal = (date) => Date.UTC(date.getFullYear(), date.getMonth(), date.getDate());
+  return Math.round((ordinal(last) - ordinal(first)) / 86400000) + 1;
+}
+
 function enumerateDates(start, end) {
   const startDate = parseDate(start);
   const endDate = parseDate(end);
@@ -492,6 +501,7 @@ boot();
 }
 
 module.exports = {
+  daysInclusive,
   buildCustodyBlocks,
   buildICS,
   buildKidPage,

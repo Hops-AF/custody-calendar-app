@@ -8,9 +8,10 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import DateTimePicker from '@react-native-community/datetimepicker';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 const {
+  daysInclusive,
   computeCustodySummary,
   getCalendarDayState,
   resolveLocation,
@@ -42,12 +43,6 @@ function displayDate(dateStr) {
   const [y, m, d] = dateStr.split('-');
   return new Date(parseInt(y), parseInt(m) - 1, parseInt(d))
     .toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-}
-
-function daysInclusive(start, end) {
-  const s = toDate(start), e = toDate(end);
-  if (!s || !e || e < s) return null;
-  return Math.floor((e - s) / 86400000) + 1;
 }
 
 function timePickerValue(value) {
@@ -1124,7 +1119,7 @@ function EntryEditor({ entry, parents, children, parentLocations, onClose, onDel
   };
 
   return (
-      <View style={styles.editorSafeArea}>
+      <SafeAreaView style={styles.editorSafeArea} edges={['top', 'bottom', 'left', 'right']}>
         <View style={styles.editorHeader}>
           <View style={styles.editorHeaderSide} />
           <Text style={styles.editorHeaderTitle}>Custody entry</Text>
@@ -1211,6 +1206,16 @@ function EntryEditor({ entry, parents, children, parentLocations, onClose, onDel
                 </View>
                 <Ionicons name="chevron-forward" size={18} color="#9ca3af" />
               </TouchableOpacity>
+              {entry.exchangeTime ? (
+                <TouchableOpacity
+                  style={{ alignSelf: 'flex-end', minHeight: 44, minWidth: 44, alignItems: 'center', justifyContent: 'center' }}
+                  onPress={() => onUpdate(entry.id, 'exchangeTime', '')}
+                  accessibilityRole="button"
+                  accessibilityLabel="Clear exchange time"
+                >
+                  <Ionicons name="close-circle-outline" size={24} color="#6b7280" />
+                </TouchableOpacity>
+              ) : null}
               <TextInput
                 style={styles.input}
                 value={entry.exchangePlace || ''}
@@ -1236,7 +1241,7 @@ function EntryEditor({ entry, parents, children, parentLocations, onClose, onDel
             </TouchableOpacity>
           </ScrollView>
         </KeyboardAvoidingView>
-      </View>
+      </SafeAreaView>
   );
 }
 

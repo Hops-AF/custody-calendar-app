@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
+  daysInclusive,
   computeCustodySummary,
   enumerateDates,
   getCalendarDayState,
@@ -12,6 +13,30 @@ const {
   getKidView,
   buildKidPage,
 } = require('./custody-engine');
+
+test('inclusive day counts handle boundaries and reject invalid ranges', () => {
+  assert.equal(daysInclusive('2026-01-01', '2026-01-01'), 1);
+  assert.equal(daysInclusive('2024-02-28', '2024-03-01'), 3);
+  assert.equal(daysInclusive('2025-12-31', '2026-01-01'), 2);
+  assert.equal(daysInclusive('2026-03-09', '2026-03-07'), null);
+  assert.equal(daysInclusive('2026-02-30', '2026-03-03'), null);
+  assert.equal(daysInclusive('', '2026-03-03'), null);
+});
+
+test('inclusive day counts remain correct across DST in multiple time zones', () => {
+  const { execFileSync } = require('node:child_process');
+  for (const TZ of ['America/Chicago', 'America/Los_Angeles', 'Europe/London', 'UTC']) {
+    const result = execFileSync(process.execPath, ['-e', `
+      const { daysInclusive } = require('./custody-engine');
+      console.log(JSON.stringify([
+        daysInclusive('2026-03-07', '2026-03-09'),
+        daysInclusive('2026-10-31', '2026-11-02'),
+        daysInclusive('2026-03-28', '2026-03-30')
+      ]));
+    `], { cwd: __dirname, env: { ...process.env, TZ }, encoding: 'utf8' });
+    assert.deepEqual(JSON.parse(result), [3, 3, 3], TZ);
+  }
+});
 
 function entry(parent, beginDate, endDate, children) {
   return {
