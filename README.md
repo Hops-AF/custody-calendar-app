@@ -8,7 +8,10 @@ A React Native / Expo app for tracking child custody schedules and generating cu
 - **Custody entries** — record date ranges, which children are present, and notes
 - **Guided household setup** — add parents, children, and per-child recurring schedules in a four-step intake flow
 - **Calendar view** — a color-coded month grid with per-child filters, split-color sibling schedules, cross-month range selection, and same-child conflict detection
-- **iOS-style navigation** — fixed tabs for Calendar, Kid View, Entries, Reports, and Settings
+- **iOS-style navigation** — fixed tabs for Calendar, My Days, Entries, Reports, and Settings
+- **Daily plans** — browse a date without editing; inspect per-child ownership, missing exchange details, and overlapping entries. Creating a range requires an explicit parent choice and Save.
+- **My Days** — a simplified child-facing view of today and upcoming changes, without parent notes
+- **Daily plan sharing** — open the system share sheet with a factual snapshot of the selected date; no parent notes or implied agreement
 - **Focused entry editing** — virtualized entry summaries open into a dedicated editor with native date and time pickers
 - **Schedule generator** — auto-create entries for common arrangements:
   - Every Other Weekend (~80/20)
@@ -65,6 +68,8 @@ Scan the QR code with the Expo Go app to run on a physical device.
 
 ## Notes
 
+- This is a local planning tool, not a synchronized co-parenting service. Sharing a snapshot does not notify or record approval from the other parent. Parent notes remain in parent-facing records and CSV exports, but are omitted from My Days and the exported child page. My Days is a presentation mode, not an access-control boundary; the other tabs remain available on the device.
+- UI regression tests cover seven-column calendar alignment, color contrast, primary-parent defaults, conflicting entries, and note-free sharing.
 - Data lives only on the device. Use **Export CSV** to back up or share your records.
 - Run `npm test` to verify the custody calculation engine.
 - This project currently uses a canary Expo SDK build; if `npm install` reports peer-dependency conflicts, run `npm install --legacy-peer-deps`.

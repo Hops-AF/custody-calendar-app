@@ -322,7 +322,10 @@ function kidEngineSource() {
 // stays correct as days pass (within the exported window).
 function buildKidPage({ entries, parents, children, parentColors, parentLocations, parentPhones, validFrom, validTo, generatedOn }) {
   const data = {
-    entries, parents, children, parentColors, parentLocations, parentPhones,
+    // Parent notes must not travel inside a child's page, even as hidden JSON.
+    entries: entries.map(({ parent, beginDate, endDate, childrenPresent, isException, location, exchangeTime, exchangePlace }) =>
+      ({ parent, beginDate, endDate, childrenPresent, isException, location, exchangeTime, exchangePlace })),
+    parents, children, parentColors, parentLocations, parentPhones,
     validFrom, validTo, generatedOn,
   };
   // Guard against "</script>" inside any string field breaking out of the tag.
@@ -436,8 +439,8 @@ function render() {
           '<div class="label">TODAY</div><div class="who">' +
           (view.current ? "You're with " + esc(view.current.parent) : 'No schedule for today') +
           '</div>';
-  if (view.current && view.current.isException && view.current.entry && view.current.entry.note)
-    html += '<div class="meta">\\uD83C\\uDF81 ' + esc(view.current.entry.note) + '</div>';
+  if (view.current && view.current.isException)
+    html += '<div class="meta">Special schedule</div>';
   if (loc) html += '<div class="meta">\\uD83D\\uDCCD ' + esc(loc) + '</div>';
   if (phone) html += '<div class="meta">\\uD83D\\uDCDE <a style="color:inherit" href="tel:' +
                      esc(phone.replace(/[^0-9+]/g,'')) + '">' + esc(phone) + '</a></div>';

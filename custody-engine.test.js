@@ -405,7 +405,7 @@ test('kid page escapes HTML in names so titles cannot inject markup', () => {
 test('kid page neutralises a closing script tag hidden in the data', () => {
   const html = buildKidPage({
     entries: [{ parent: 'Dad', beginDate: '2026-06-05', endDate: '2026-06-05',
-                childrenPresent: { Sam: true }, note: '</script><script>alert(1)</script>' }],
+                childrenPresent: { Sam: true }, location: '</script><script>alert(1)</script>' }],
     parents: ['Mom', 'Dad'], children: ['Sam'],
     parentColors: {}, parentLocations: {}, parentPhones: {},
     validFrom: '2026-06-01', validTo: '2026-12-31', generatedOn: '2026-06-01',
@@ -413,4 +413,14 @@ test('kid page neutralises a closing script tag hidden in the data', () => {
   // The literal closing tag must not survive inside the embedded JSON.
   assert.equal(html.includes('</script><script>alert(1)'), false);
   assert.match(html, /\\u003c\/script/);
+});
+
+test('kid page omits parent notes and unrelated entry fields from its embedded data', () => {
+  const html = samplePage({ entries: [{
+    ...holiday('Dad', '2026-06-05', '2026-06-07', ['Sam']),
+    note: 'PRIVATE_PARENT_NOTE', internalDetail: 'INTERNAL_ONLY', exchangePlace: 'School',
+  }] });
+  assert.equal(html.includes('PRIVATE_PARENT_NOTE'), false);
+  assert.equal(html.includes('INTERNAL_ONLY'), false);
+  assert.match(html, /School/);
 });

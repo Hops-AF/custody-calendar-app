@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import {
-  View, Text, TextInput, TouchableOpacity, ScrollView, Switch, FlatList, Pressable,
-  Modal, Alert, StyleSheet, StatusBar, Platform,
+  View, Text, TouchableOpacity, ScrollView, Switch, FlatList, Pressable,
+  Modal, Alert, StyleSheet, StatusBar, Platform, Share, AppState,
   KeyboardAvoidingView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -10,6 +10,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
+import { IconButton, PersonBadge, ChildSelector, DetailLine, SectionHeading, Field as TextInput, theme } from './family-ui';
+const { monthWeeks, textOnColor, dayDetails, dayShareText } = require('./calendar-ui');
 const {
   daysInclusive,
   computeCustodySummary,
@@ -71,6 +73,17 @@ function pad2(n) { return String(n).padStart(2, '0'); }
 function localTodayStr() {
   const d = new Date();
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+function useToday() {
+  const [today, setToday] = useState(localTodayStr);
+  useEffect(() => {
+    const refresh = () => setToday(localTodayStr());
+    const timer = setInterval(refresh, 60000);
+    const subscription = AppState.addEventListener('change', (state) => { if (state === 'active') refresh(); });
+    return () => { clearInterval(timer); subscription.remove(); };
+  }, []);
+  return today;
 }
 
 function addDays(dateStr, n) {
@@ -242,7 +255,7 @@ function generate223(parent1, parent2, startDateStr, endDateStr, childrenList) {
 
 const APP_TABS = [
   { id: 'calendar', label: 'Calendar', icon: 'calendar-outline', activeIcon: 'calendar' },
-  { id: 'kid', label: 'Kid View', icon: 'happy-outline', activeIcon: 'happy' },
+  { id: 'kid', label: 'My Days', icon: 'sunny-outline', activeIcon: 'sunny' },
   { id: 'entries', label: 'Entries', icon: 'list-outline', activeIcon: 'list' },
   { id: 'reports', label: 'Reports', icon: 'pie-chart-outline', activeIcon: 'pie-chart' },
   { id: 'settings', label: 'Settings', icon: 'settings-outline', activeIcon: 'settings' },
@@ -262,7 +275,9 @@ function BottomTabBar({ value, onChange }) {
             accessibilityLabel={tab.label}
             accessibilityState={{ selected: active }}
           >
-            <Ionicons name={active ? tab.activeIcon : tab.icon} size={22} color={active ? '#2563eb' : '#6b7280'} />
+            <View style={[styles.tabIconFrame, active && styles.tabIconFrameActive]}>
+              <Ionicons name={active ? tab.activeIcon : tab.icon} size={22} color={active ? theme.accent : theme.muted} />
+            </View>
             <Text style={[styles.bottomTabLabel, active && styles.bottomTabLabelActive]}>{tab.label}</Text>
           </TouchableOpacity>
         );
@@ -317,254 +332,169 @@ function NativePickerSheet({ picker, title, onChange, onCancel, onConfirm }) {
 
 // ── CalendarView ──────────────────────────────────────────────────────────────
 
-function CalendarView({ entries, parents, parentColors, children, childColors, onCreateEntry }) {
-  const now = new Date();
-  const [viewYear, setViewYear] = useState(now.getFullYear());
-  const [viewMonth, setViewMonth] = useState(now.getMonth());
+function CalendarView({ entries, parents, parentColors, parentLocations, children, childColors, onCreateEntry, onOpenEntry, today }) {
+  const [viewYear, setViewYear] = useState(() => toDate(today).getFullYear());
+  const [viewMonth, setViewMonth] = useState(() => toDate(today).getMonth());
+  const [selectedDate, setSelectedDate] = useState(today);
+  const [rangeMode, setRangeMode] = useState(false);
   const [pendingStart, setPendingStart] = useState(null);
-  const [pendingRange, setPendingRange] = useState(null); // {start, end} awaiting parent
-  const [childFilter, setChildFilter] = useState(null); // null = all children
+  const [pendingRange, setPendingRange] = useState(null);
+  const [childFilter, setChildFilter] = useState(null);
+  const [pendingParent, setPendingParent] = useState(null);
   const [pendingHoliday, setPendingHoliday] = useState(false);
   const [pendingHolidayName, setPendingHolidayName] = useState('');
-
-  const todayStr = localTodayStr();
-
-  const colorFor = (parent) => colorForName(parent, parents, parentColors);
-
-  const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
-  const firstDow = new Date(viewYear, viewMonth, 1).getDay();
-
-  const resetSelection = () => { setPendingStart(null); setPendingRange(null); setPendingHoliday(false); setPendingHolidayName(''); };
-  const prevMonth = () => {
-    if (viewMonth === 0) { setViewMonth(11); setViewYear((y) => y - 1); }
-    else setViewMonth((m) => m - 1);
-  };
-  const nextMonth = () => {
-    if (viewMonth === 11) { setViewMonth(0); setViewYear((y) => y + 1); }
-    else setViewMonth((m) => m + 1);
-  };
-
-  const handleDayClick = (ds) => {
-    if (pendingRange) { setPendingRange(null); setPendingStart(ds); return; }
-    if (!pendingStart) { setPendingStart(ds); return; }
-    const start = ds < pendingStart ? ds : pendingStart;
-    const end = ds < pendingStart ? pendingStart : ds;
-    setPendingRange({ start, end });
-    setPendingStart(null);
-  };
-
-  // Days-per-parent tally for the displayed month
+  const activeChild = children.includes(childFilter) ? childFilter : null;
+  const colorFor = (name) => colorForName(name, parents, parentColors);
+  const weeks = useMemo(() => monthWeeks(viewYear, viewMonth), [viewYear, viewMonth]);
+  const dayStates = useMemo(() => Object.fromEntries(weeks.flat().filter(Boolean).map((date) =>
+    [date, getCalendarDayState(date, entries, children, activeChild)])), [weeks, entries, children, activeChild]);
+  const details = useMemo(() => dayDetails({
+    date: selectedDate, entries, parents, children, childFilter: activeChild, parentLocations,
+  }), [selectedDate, entries, parents, children, activeChild, parentLocations]);
   const monthTally = {};
-  let hasConflict = false;
-  let hasSplit = false;
-  let hasHoliday = false;
-  for (let day = 1; day <= daysInMonth; day++) {
-    const ds = `${viewYear}-${pad2(viewMonth + 1)}-${pad2(day)}`;
-    const state = getCalendarDayState(ds, entries, children, childFilter);
-    if (state.type === 'conflict') hasConflict = true;
-    if (state.type === 'split') hasSplit = true;
-    if (state.isException) hasHoliday = true;
-    state.childStates.forEach((childState) => {
-      if (childState.type === 'single') {
-        monthTally[childState.parent] = (monthTally[childState.parent] || 0) + 1;
-      }
-    });
-  }
+  Object.values(dayStates).forEach((state) => state.childStates.forEach((child) => {
+    if (child.type === 'single') monthTally[child.parent] = (monthTally[child.parent] || 0) + 1;
+  }));
 
-  const isSelEdge = (ds) => ds === pendingStart || (pendingRange && (ds === pendingRange.start || ds === pendingRange.end));
-  const inPendingRange = (ds) => pendingRange && ds >= pendingRange.start && ds <= pendingRange.end;
-
-  const hint = pendingRange ? 'Choose which parent has custody for this range.'
-    : pendingStart ? 'Now tap the END date (or the same day for one day).'
-    : 'Tap the START date, then the END date, to add custody.';
+  const resetRange = () => {
+    setPendingStart(null); setPendingRange(null); setPendingParent(null);
+    setPendingHoliday(false); setPendingHolidayName('');
+  };
+  const changeMonth = (offset) => {
+    const date = new Date(viewYear, viewMonth + offset, 1);
+    setViewYear(date.getFullYear()); setViewMonth(date.getMonth());
+  };
+  const selectDate = (date) => {
+    if (!rangeMode) { setSelectedDate(date); return; }
+    if (!pendingStart || pendingRange) {
+      resetRange(); setPendingStart(date); return;
+    }
+    setPendingRange({ start: date < pendingStart ? date : pendingStart, end: date < pendingStart ? pendingStart : date });
+  };
+  const shareDay = async () => {
+    try { await Share.share({ message: dayShareText(selectedDate, details) }); }
+    catch { Alert.alert('Could not share', 'Please try again.'); }
+  };
 
   return (
     <View>
-      {/* Calendar grid */}
-      <View style={styles.card}>
+      <SectionHeading title="Family calendar" subtitle={rangeMode ? 'New date range' : 'Daily plans'}>
+        <IconButton icon={rangeMode ? 'close' : 'add'} label={rangeMode ? 'Cancel date range' : 'Add date range'}
+          active={rangeMode} onPress={() => { resetRange(); setRangeMode(!rangeMode); }} />
+      </SectionHeading>
+      <ChildSelector children={children} value={activeChild} includeAll colors={(c) => colorForName(c, children, childColors)}
+        onChange={(c) => { setChildFilter(c); resetRange(); }} />
+      <View style={styles.calendarSurface}>
         <View style={styles.calNav}>
-          <TouchableOpacity onPress={prevMonth} style={styles.calNavBtn} accessibilityRole="button" accessibilityLabel="Previous month">
-            <Text style={styles.calNavArrow}>‹</Text>
-          </TouchableOpacity>
-          <Text style={styles.calNavTitle}>{MONTH_NAMES[viewMonth]} {viewYear}</Text>
-          <TouchableOpacity onPress={nextMonth} style={styles.calNavBtn} accessibilityRole="button" accessibilityLabel="Next month">
-            <Text style={styles.calNavArrow}>›</Text>
-          </TouchableOpacity>
-        </View>
-
-        <Text style={styles.calSelectHint}>{hint}</Text>
-
-        {children && children.length > 1 && (
-          <View style={[styles.chipRow, { justifyContent: 'center', marginBottom: 10 }]}>
-            <TouchableOpacity
-              style={[styles.chip, childFilter === null && { backgroundColor: '#111827', borderColor: '#111827' }]}
-              onPress={() => setChildFilter(null)}
-              accessibilityRole="button"
-              accessibilityState={{ selected: childFilter === null }}
-            >
-              <Text style={[styles.chipText, childFilter === null && styles.chipTextActive]}>All children</Text>
-            </TouchableOpacity>
-            {children.map((c) => {
-              const active = childFilter === c;
-              const cc = colorForName(c, children, childColors);
-              return (
-                <TouchableOpacity
-                  key={c}
-                  style={[styles.chip, active && { backgroundColor: cc, borderColor: cc }]}
-                  onPress={() => setChildFilter(c)}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected: active }}
-                >
-                  <Text style={[styles.chipText, active && styles.chipTextActive]}>{c}</Text>
-                </TouchableOpacity>
-              );
-            })}
+          <Text style={styles.calNavTitle}>{MONTH_NAMES[viewMonth]} <Text style={styles.calYear}>{viewYear}</Text></Text>
+          <View style={styles.toolRow}>
+            <IconButton icon="today-outline" label="Go to today" onPress={() => {
+              setViewYear(toDate(today).getFullYear()); setViewMonth(toDate(today).getMonth()); setSelectedDate(today);
+            }} />
+            <IconButton icon="chevron-back" label="Previous month" onPress={() => changeMonth(-1)} />
+            <IconButton icon="chevron-forward" label="Next month" onPress={() => changeMonth(1)} />
           </View>
-        )}
-
-        <View style={styles.calWeekRow}>
-          {DAY_NAMES.map((d) => <Text key={d} style={styles.calWeekday}>{d}</Text>)}
         </View>
-
-        <View style={styles.calGrid}>
-          {Array.from({ length: firstDow }).map((_, i) => <View key={'blank' + i} style={styles.calCell} />)}
-          {Array.from({ length: daysInMonth }).map((_, i) => {
-            const day = i + 1;
-            const ds = `${viewYear}-${pad2(viewMonth + 1)}-${pad2(day)}`;
-            const state = getCalendarDayState(ds, entries, children, childFilter);
-            const col = state.type === 'single' ? colorFor(state.parent) : null;
-            const isToday = ds === todayStr;
-            const selEdge = isSelEdge(ds);
-            const inRange = inPendingRange(ds);
-            const borderStyle = selEdge
-              ? { borderColor: '#2563eb', borderWidth: 3 }
-              : inRange
-                ? { borderColor: '#93c5fd', borderWidth: 2 }
-                : state.type === 'conflict'
-                  ? { borderColor: '#dc2626', borderWidth: 2, borderStyle: 'dashed' }
-                  : null;
-            return (
-              <TouchableOpacity
-                key={day}
-                style={styles.calCell}
-                activeOpacity={0.6}
-                onPress={() => handleDayClick(ds)}
-                accessibilityRole="button"
-                accessibilityLabel={`${displayDate(ds)}${state.isException ? ', holiday' : ''}${state.type === 'split' ? ', children have different schedules' : state.type === 'conflict' ? ', conflicting entries' : state.parent ? `, ${state.parent}` : ', unassigned'}`}
-              >
-                <View style={[
-                  styles.calDay,
-                  { backgroundColor: col || '#e5e7eb' },
-                  borderStyle,
-                ]}>
-                  {state.type === 'split' && (
-                    <View style={styles.calSplitFill}>
-                      {state.childStates.map((childState, index) => (
-                        <View
-                          key={childState.child || index}
-                          style={{ flex: 1, backgroundColor: childState.parent ? colorFor(childState.parent) : '#e5e7eb' }}
-                        />
-                      ))}
-                    </View>
-                  )}
-                  {state.isException && <Text style={styles.calHolidayMark}>🎁</Text>}
-                  <Text style={[
-                    styles.calDayNum,
-                    { color: (col || state.type === 'split') ? '#fff' : '#9ca3af' },
-                    state.type === 'split' && styles.calDayNumOverlay,
-                    isToday && styles.calDayToday,
-                  ]}>{day}</Text>
-                </View>
-              </TouchableOpacity>
-            );
+        {rangeMode && <View style={styles.rangeStatus} accessibilityLiveRegion="polite">
+          <Ionicons name="calendar-outline" size={18} color={theme.accent} />
+          <Text style={styles.rangeStatusText}>{pendingRange ? 'Dates selected' : pendingStart ? 'Select end date' : 'Select start date'}</Text>
+          {pendingStart && <IconButton icon="refresh-outline" label="Restart date selection" onPress={resetRange} />}
+        </View>}
+        <View style={styles.calWeekRow}>
+          {DAY_NAMES.map((day) => <Text key={day} style={styles.calWeekday}>{day}</Text>)}
+        </View>
+        {weeks.map((week, row) => <View key={row} style={styles.calendarWeek}>
+          {week.map((date, column) => {
+            if (!date) return <View key={'blank-' + column} style={styles.calCell} />;
+            const state = dayStates[date];
+            const color = state.type === 'single' ? colorFor(state.parent) : '#e7eae8';
+            const selected = rangeMode
+              ? date === pendingStart || Boolean(pendingRange && date >= pendingRange.start && date <= pendingRange.end)
+              : date === selectedDate;
+            const foreground = textOnColor(color);
+            return <Pressable key={date} onPress={() => selectDate(date)} style={styles.calCell}
+              accessibilityRole="button" accessibilityState={{ selected }}
+              accessibilityLabel={displayDate(date) + (date === today ? ', today' : '') + ', ' +
+                (state.type === 'conflict' ? 'Schedule needs review' : state.type === 'split' ? 'Different plans by child' : state.parent || 'No explicit entry')}
+            >
+              {({ pressed }) => <View style={[styles.calDay, { backgroundColor: color }, selected && styles.calDaySelected, pressed && { opacity: 0.65 }]}>
+                {state.type === 'split' && <View style={styles.calSplitFill}>{state.childStates.map((c, i) =>
+                  <View key={i} style={{ flex: 1, backgroundColor: c.parent ? colorFor(c.parent) : '#e7eae8' }} />
+                )}</View>}
+                <Text style={[styles.calDayNum, { color: foreground }, state.type === 'split' && styles.splitNumber]}>{Number(date.slice(-2))}</Text>
+                {date === today && <View style={[styles.todayDot, { backgroundColor: state.type === 'split' ? '#182421' : foreground }]} />}
+                {state.type === 'conflict' && <Ionicons name="alert-circle" size={13} color="#b42318" style={styles.dayMarker} />}
+                {state.isException && state.type !== 'conflict' && <Ionicons name="star" size={9} color={foreground} style={styles.dayMarker} />}
+                {selected && <View style={styles.selectedTick}><Ionicons name="checkmark" size={10} color="#fff" /></View>}
+              </View>}
+            </Pressable>;
           })}
+        </View>)}
+        <View style={styles.calendarLegend}>
+          {parents.map((parent) => <View key={parent} style={styles.legendItem}>
+            <View style={[styles.legendSwatch, { backgroundColor: colorFor(parent) }]} />
+            <Text style={styles.legendCaption}>{parent}</Text>
+          </View>)}
+          <View style={styles.legendItem}><View style={[styles.legendSwatch, { backgroundColor: '#e7eae8' }]} /><Text style={styles.legendCaption}>No entry</Text></View>
         </View>
       </View>
 
-      {/* Range assignment panel */}
-      {pendingRange && (
-        <View style={styles.card}>
-          <Text style={styles.sectionTitle}>New custody period</Text>
-          <Text style={styles.windowInfo}>
-            {displayDate(pendingRange.start)} – {displayDate(pendingRange.end)}
-            {'  ·  '}{daysInclusive(pendingRange.start, pendingRange.end)} custody day(s)
-          </Text>
-          {parents.length === 0 ? (
-            <Text style={styles.modalEmpty}>Add parents in the Entries tab first, then you can assign custody.</Text>
-          ) : (
-            <View>
-              <View style={[styles.switchRow, { marginTop: 12 }]}>
-                <Text style={styles.switchLabel}>🎁 Holiday / exception (overrides the schedule)</Text>
-                <Switch
-                  value={pendingHoliday}
-                  onValueChange={setPendingHoliday}
-                  trackColor={{ false: '#d1d5db', true: '#93c5fd' }}
-                  thumbColor={pendingHoliday ? '#2563eb' : '#f3f4f6'}
-                />
-              </View>
-              {pendingHoliday && (
-                <TextInput
-                  style={[styles.input, { marginBottom: 4 }]}
-                  value={pendingHolidayName}
-                  onChangeText={setPendingHolidayName}
-                  placeholder="Holiday name (e.g. Christmas)"
-                />
-              )}
-              <Text style={[styles.fieldLabel, { marginTop: 12 }]}>Assign to</Text>
-              <View style={styles.chipRow}>
-                {parents.map((p, idx) => {
-                  const col = colorFor(p);
-                  return (
-                    <TouchableOpacity
-                      key={p}
-                      style={{ backgroundColor: col, paddingHorizontal: 14, paddingVertical: 9, borderRadius: 8 }}
-                      onPress={() => { onCreateEntry(pendingRange.start, pendingRange.end, p, childFilter, pendingHoliday, pendingHolidayName); resetSelection(); }}
-                    >
-                      <Text style={styles.btnText}>{p}{idx === 0 ? ' (Primary)' : ''}</Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
+      {rangeMode ? <View style={styles.sectionBand}>
+        <SectionHeading title={pendingRange ? 'New custody period' : 'Date range'}
+          subtitle={pendingRange ? displayDate(pendingRange.start) + ' - ' + displayDate(pendingRange.end) : pendingStart ? 'From ' + displayDate(pendingStart) : 'No dates selected'} />
+        {pendingRange && <>
+          <Text style={styles.windowInfo}>{daysInclusive(pendingRange.start, pendingRange.end)} days · {activeChild || 'All children'}</Text>
+          {!parents.length && <Text style={styles.kidEmpty}>No parents added. Household details are in Settings.</Text>}
+          <View style={styles.parentChoices}>{parents.map((parent) => <Pressable key={parent}
+            onPress={() => setPendingParent(parent)} accessibilityRole="radio" accessibilityState={{ checked: parent === pendingParent }}
+            style={[styles.parentChoice, parent === pendingParent && styles.parentChoiceSelected]}>
+            <PersonBadge name={parent} color={colorFor(parent)} small />
+            <Text style={styles.parentChoiceText}>{parent}</Text>
+            <Ionicons name={parent === pendingParent ? 'radio-button-on' : 'radio-button-off'} size={21} color={theme.accent} />
+          </Pressable>)}</View>
+          <View style={styles.switchRow}><Text style={styles.switchLabel}>Holiday / exception</Text><Switch value={pendingHoliday} onValueChange={setPendingHoliday} trackColor={{ true: theme.accent }} /></View>
+          {pendingHoliday && <TextInput style={styles.input} value={pendingHolidayName} onChangeText={setPendingHolidayName} placeholder="Holiday name (optional)" />}
+          <Pressable disabled={!parents.includes(pendingParent)} accessibilityRole="button" accessibilityState={{ disabled: !parents.includes(pendingParent) }}
+            onPress={() => {
+              onCreateEntry(pendingRange.start, pendingRange.end, pendingParent, activeChild, pendingHoliday, pendingHolidayName);
+              setSelectedDate(pendingRange.start); resetRange(); setRangeMode(false);
+            }} style={({ pressed }) => [styles.saveRangeButton, !parents.includes(pendingParent) && styles.btnDisabled, pressed && { opacity: 0.7 }]}>
+            <Ionicons name="checkmark" size={19} color="#fff" /><Text style={styles.btnText}>Save period</Text>
+          </Pressable>
+        </>}
+      </View> : <View style={styles.sectionBand}>
+        <SectionHeading title={selectedDate === today ? 'Today' : displayDate(selectedDate)}
+          subtitle={selectedDate === today ? displayDate(selectedDate) : 'Daily plan'}>
+          <IconButton icon="share-outline" label="Share daily plan" onPress={shareDay} />
+        </SectionHeading>
+        {details.map((d, index) => <View key={d.child || index} style={styles.dayDetail}>
+          <View style={styles.personLine}>
+            <PersonBadge name={d.parent || '?'} color={d.type === 'conflict' ? '#fbe7de' : d.parent ? colorFor(d.parent) : '#e7eae8'} />
+            <View style={{ flex: 1 }}><Text style={styles.detailChild}>{d.child || 'Family'}</Text>
+              <Text style={styles.detailParent}>{d.type === 'conflict' ? 'Schedule needs review' : d.parent ? 'With ' + d.parent : 'Not scheduled'}</Text>
             </View>
-          )}
-          <TouchableOpacity style={[styles.btnDanger, { marginTop: 14, alignSelf: 'flex-start' }]} onPress={resetSelection}>
-            <Text style={styles.btnText}>Cancel</Text>
-          </TouchableOpacity>
-        </View>
-      )}
-
-      {/* Legend + month tally */}
-      <View style={styles.card}>
-        <Text style={styles.fieldLabel}>Legend · {!childFilter && children.length > 1 ? 'child-days' : 'custody days'} this month</Text>
-        {parents.length === 0 && (
-          <Text style={styles.modalEmpty}>Add parents in the Entries tab to color the calendar.</Text>
-        )}
-        {parents.map((p, idx) => {
-          const col = colorFor(p);
-          return (
-            <View key={p} style={styles.legendRow}>
-              <View style={[styles.legendSwatch, { backgroundColor: col }]} />
-              <Text style={styles.legendText}>{p}{idx === 0 ? ' (Primary)' : ''}</Text>
-              <Text style={styles.legendCount}>{monthTally[p] || 0}</Text>
-            </View>
-          );
-        })}
-        <View style={styles.legendRow}>
-          <View style={[styles.legendSwatch, { backgroundColor: '#e5e7eb' }]} />
-          <Text style={styles.legendText}>No custody entry</Text>
-        </View>
-        {hasConflict && (
-          <Text style={styles.calConflictNote}>Some children are assigned to two parents on the same day (red outline).</Text>
-        )}
-        {hasSplit && !childFilter && (
-          <Text style={styles.calSplitNote}>Split-color days mean the children have different schedules.</Text>
-        )}
-        {hasHoliday && (
-          <Text style={styles.calHint}>🎁 marks a holiday/exception that overrides the recurring schedule.</Text>
-        )}
-        <Text style={styles.calHint}>
-          Choose a child to see one schedule. Gray means no explicit entry; reporting credits unassigned days to the primary parent.
-        </Text>
+            {d.entry?.id && <IconButton icon="create-outline" label={'Edit entry for ' + (d.child || 'family')} onPress={() => onOpenEntry(d.entry.id)} />}
+          </View>
+          <Text style={[styles.sourceLabel, d.type === 'conflict' && { color: '#974219' }]}>{d.source}</Text>
+          {d.type === 'conflict' ? <>
+            <Text style={styles.screenSub}>More than one parent is listed for this date.</Text>
+            {d.entries.map((entry) => <Pressable key={entry.id} accessibilityRole="button" onPress={() => onOpenEntry(entry.id)} style={styles.conflictEntry}>
+              <Text style={styles.parentChoiceText}>{entry.parent}</Text><Ionicons name="chevron-forward" size={18} color={theme.muted} />
+            </Pressable>)}
+          </> : <>
+            <DetailLine icon="time-outline" text={'Exchange: ' + (d.entry?.exchangeTime || 'Time not set')} />
+            <DetailLine icon="location-outline" text={'Meet at: ' + (d.entry?.exchangePlace || 'Place not set')} />
+            {d.location ? <DetailLine icon="home-outline" text={d.location} /> : null}
+          </>}
+        </View>)}
+      </View>}
+      <View style={styles.sectionBand}>
+        <SectionHeading title="Recorded this month" subtitle={activeChild || (children.length > 1 ? 'Child-days across all children' : 'Custody days')} />
+        {parents.map((parent) => <View key={parent} style={styles.legendRow}>
+          <View style={[styles.legendSwatch, { backgroundColor: colorFor(parent) }]} />
+          <Text style={styles.legendText}>{parent}</Text><Text style={styles.legendCount}>{monthTally[parent] || 0}</Text>
+        </View>)}
+        <Text style={styles.calHint}>Explicit entries only. Reports also count primary-parent defaults.</Text>
       </View>
     </View>
   );
@@ -574,125 +504,62 @@ function CalendarView({ entries, parents, parentColors, children, childColors, o
 
 // A read-only, plain-language view for the kids: where they are today, when
 // they switch next, and what the next two weeks look like.
-function KidView({ entries, parents, parentColors, parentLocations, parentPhones, children, childColors }) {
+function KidView({ entries, parents, parentColors, parentLocations, parentPhones, children, childColors, today }) {
   const [child, setChild] = useState(children[0] || null);
-  const today = localTodayStr();
-
-  // Keep the selection valid if children change underneath us.
   const activeChild = children.includes(child) ? child : (children[0] || null);
-
-  const view = getKidView({ entries, parents, children, child: activeChild, today, daysAhead: 14 });
+  const view = useMemo(() => getKidView({ entries, parents, children, child: activeChild, today, daysAhead: 14 }),
+    [entries, parents, children, activeChild, today]);
   const colorFor = (parent) => colorForName(parent, parents, parentColors);
+  const shortDate = (date) => toDate(date)?.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) || '';
+  const currentColor = view.current ? colorFor(view.current.parent) : '#e7eae8';
+  const currentLocation = view.current ? resolveLocation(view.current.entry, parentLocations) || parentLocations[view.current.parent] : '';
+  const phone = view.current ? parentPhones[view.current.parent] : '';
+  const ink = textOnColor(currentColor);
 
-  const weekday = (ds) => {
-    const d = toDate(ds);
-    return d ? d.toLocaleDateString('en-US', { weekday: 'long' }) : '';
-  };
-  const shortDate = (ds) => {
-    const d = toDate(ds);
-    return d ? d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
-  };
-  const countdown = (n) => (n === 0 ? 'today' : n === 1 ? 'tomorrow' : `in ${n} days`);
-
-  if (parents.length === 0) {
-    return (
-      <View style={styles.card}>
-        <Text style={styles.kidEmpty}>Add parents and a schedule first, then this view will show where you are.</Text>
-      </View>
-    );
-  }
-
-  const currentColor = view.current ? colorFor(view.current.parent) : '#9ca3af';
-  const currentLocation = view.current
-    ? (resolveLocation(view.current.entry, parentLocations) || parentLocations[view.current.parent] || '')
-    : '';
-  const currentPhone = view.current ? (parentPhones[view.current.parent] || '') : '';
-
-  return (
-    <View>
-      {/* Which kid */}
-      {children.length > 1 && (
-        <View style={[styles.chipRow, { justifyContent: 'center', marginBottom: 12 }]}>
-          {children.map((c) => {
-            const active = c === activeChild;
-            const cc = colorForName(c, children, childColors);
-            return (
-              <TouchableOpacity
-                key={c}
-                style={[styles.chip, active && { backgroundColor: cc, borderColor: cc }]}
-                onPress={() => setChild(c)}
-                accessibilityRole="button"
-                accessibilityState={{ selected: active }}
-              >
-                <Text style={[styles.chipText, active && styles.chipTextActive]}>{c}</Text>
-              </TouchableOpacity>
-            );
-          })}
+  return <View>
+    <SectionHeading title="My days" subtitle={toDate(today).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })} />
+    <ChildSelector children={children} value={activeChild} onChange={setChild} colors={(c) => colorForName(c, children, childColors)} />
+    <View style={[styles.kidTodayBand, { borderLeftColor: currentColor }]}>
+      <View style={styles.personLine}>
+        <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={[styles.kidHome, { backgroundColor: currentColor }]}><Ionicons name="home-outline" size={30} color={ink} /></View>
+        <View style={{ flex: 1 }}><Text style={styles.detailChild}>Today{activeChild ? ' for ' + activeChild : ''}</Text>
+          <Text style={styles.kidTodayWho}>{view.current ? 'With ' + view.current.parent : 'Plan not available'}</Text>
         </View>
-      )}
-
-      {/* Today */}
-      <View style={[styles.kidTodayCard, { backgroundColor: currentColor }]}>
-        <Text style={styles.kidTodayLabel}>TODAY</Text>
-        <Text style={styles.kidTodayWho}>
-          {view.current ? `You're with ${view.current.parent}` : 'No schedule for today'}
-        </Text>
-        {view.current && view.current.isException && view.current.entry && view.current.entry.note ? (
-          <Text style={styles.kidTodayMeta}>🎁 {view.current.entry.note}</Text>
-        ) : null}
-        {currentLocation ? <Text style={styles.kidTodayMeta}>📍 {currentLocation}</Text> : null}
-        {currentPhone ? <Text style={styles.kidTodayMeta}>📞 {currentPhone}</Text> : null}
-        {view.current ? (
-          <Text style={styles.kidTodayMeta}>Until {weekday(view.current.end)}, {shortDate(view.current.end)}</Text>
-        ) : null}
       </View>
-
-      {/* Next switch */}
-      {view.next ? (
-        <View style={styles.card}>
-          <Text style={styles.fieldLabel}>Next switch</Text>
-          <Text style={styles.kidNextWho}>
-            You go to <Text style={{ color: colorFor(view.next.parent), fontWeight: '800' }}>{view.next.parent}</Text>
-          </Text>
-          <Text style={styles.kidNextWhen}>
-            {weekday(view.next.start)}, {shortDate(view.next.start)} · {countdown(view.daysUntilChange)}
-          </Text>
-          {view.next.entry && view.next.entry.exchangeTime ? (
-            <Text style={styles.kidNextMeta}>🕕 {view.next.entry.exchangeTime}</Text>
-          ) : null}
-          {view.next.entry && view.next.entry.exchangePlace ? (
-            <Text style={styles.kidNextMeta}>🚗 Meet at {view.next.entry.exchangePlace}</Text>
-          ) : null}
-        </View>
-      ) : (
-        <View style={styles.card}>
-          <Text style={styles.fieldLabel}>Next switch</Text>
-          <Text style={styles.kidNextMeta}>No switch in the next two weeks.</Text>
-        </View>
-      )}
-
-      {/* Next two weeks */}
-      <View style={styles.card}>
-        <Text style={styles.fieldLabel}>Next two weeks</Text>
-        {view.upcoming.length === 0 && (
-          <Text style={styles.kidEmpty}>Nothing scheduled yet.</Text>
-        )}
-        {view.upcoming.map((b, i) => (
-          <View key={`${b.parent}-${b.start}-${i}`} style={styles.kidRow}>
-            <View style={[styles.kidRowBar, { backgroundColor: colorFor(b.parent) }]} />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.kidRowWho}>{b.parent}{b.isException ? ' 🎁' : ''}</Text>
-              <Text style={styles.kidRowWhen}>
-                {b.start === b.end
-                  ? `${weekday(b.start)}, ${shortDate(b.start)}`
-                  : `${shortDate(b.start)} – ${shortDate(b.end)}`}
-              </Text>
-            </View>
-          </View>
-        ))}
-      </View>
+      {!view.current && <Text style={styles.kidEmpty}>A parent can check today's plan.</Text>}
+      {currentLocation ? <DetailLine icon="location-outline" text={currentLocation} /> : null}
+      {phone ? <DetailLine icon="call-outline" text={phone} /> : null}
+      {view.current && view.next && <DetailLine icon="calendar-outline" text={'Through ' + shortDate(view.current.end)} />}
+      {view.current?.isException && <DetailLine icon="star-outline" text="Special schedule" />}
     </View>
-  );
+
+    <View style={styles.sectionBand}>
+      <SectionHeading title="Coming up" />
+      {view.next ? <>
+        <View style={styles.personLine}>
+          <PersonBadge name={view.next.parent} color={colorFor(view.next.parent)} />
+          <View style={{ flex: 1 }}><Text style={styles.detailChild}>{view.daysUntilChange === 1 ? 'Tomorrow' : 'In ' + view.daysUntilChange + ' days'}</Text>
+            <Text style={styles.kidNextWho}>Time with {view.next.parent}</Text>
+          </View>
+        </View>
+        <DetailLine icon="calendar-outline" text={displayDate(view.next.start)} />
+        <DetailLine icon="time-outline" text={view.next.entry?.exchangeTime || 'Time not added yet'} />
+        <DetailLine icon="location-outline" text={view.next.entry?.exchangePlace || 'Meeting place not added yet'} />
+      </> : <Text style={styles.kidEmpty}>No change of home listed in the next two weeks.</Text>}
+    </View>
+
+    <View style={styles.sectionBand}>
+      <SectionHeading title="Next two weeks" />
+      {!view.upcoming.length && <Text style={styles.kidEmpty}>Your upcoming plan will appear here.</Text>}
+      {view.upcoming.map((block, i) => <View key={block.start + '-' + i} style={styles.kidRow}>
+        <View style={styles.timelineRail}><View style={[styles.timelineDot, { backgroundColor: colorFor(block.parent) }]} /></View>
+        <View style={{ flex: 1 }}><Text style={styles.kidRowWho}>{block.parent}</Text>
+          <Text style={styles.kidRowWhen}>{shortDate(block.start)}{block.start !== block.end ? ' - ' + shortDate(block.end) : ''}</Text>
+        </View>
+        <Ionicons name={block.isException ? 'star-outline' : 'home-outline'} size={18} color={theme.muted} />
+      </View>)}
+    </View>
+  </View>;
 }
 
 // ── SetupWizard ───────────────────────────────────────────────────────────────
@@ -1024,12 +891,16 @@ function SetupWizard({ initialData, onComplete, onCancel }) {
   );
 }
 
-function EntriesScreen({ entries, parents, parentColors, children, parentLocations, totalDays, onAdd, onSelect }) {
+function EntriesScreen({ entries, parents, parentColors, children, parentLocations, today, onAdd, onSelect }) {
+  const [period, setPeriod] = useState('upcoming');
+  const visibleEntries = useMemo(() => entries.filter((entry) => period === 'all' || !entry.endDate || entry.endDate >= today)
+    .slice().sort((a, b) => (a.beginDate || '').localeCompare(b.beginDate || '')), [entries, period, today]);
+  const totalDays = visibleEntries.reduce((sum, entry) => sum + (daysInclusive(entry.beginDate, entry.endDate) || 0), 0);
   const renderEntry = ({ item }) => {
     const days = daysInclusive(item.beginDate, item.endDate);
     const includedChildren = children.filter((child) => item.childrenPresent?.[child]);
     const location = resolveLocation(item, parentLocations);
-    const incomplete = !item.parent || !item.beginDate || !item.endDate || includedChildren.length === 0;
+    const incomplete = !item.parent || days === null || includedChildren.length === 0;
     return (
       <TouchableOpacity
         style={[styles.entrySummary, item.isException && styles.entrySummaryHoliday]}
@@ -1042,10 +913,10 @@ function EntriesScreen({ entries, parents, parentColors, children, parentLocatio
         <View style={styles.entrySummaryBody}>
           <View style={styles.entrySummaryTop}>
             <View style={{ flex: 1 }}>
-              <Text style={styles.entrySummaryTitle} numberOfLines={1}>
+              <Text style={styles.entrySummaryTitle}>
                 {item.beginDate && item.endDate ? `${displayDate(item.beginDate)} - ${displayDate(item.endDate)}` : 'New custody entry'}
               </Text>
-              <Text style={[styles.entrySummaryParent, incomplete && styles.entrySummaryWarning]} numberOfLines={1}>
+              <Text style={[styles.entrySummaryParent, incomplete && styles.entrySummaryWarning]}>
                 {incomplete ? 'Needs details' : item.parent}
               </Text>
             </View>
@@ -1068,7 +939,7 @@ function EntriesScreen({ entries, parents, parentColors, children, parentLocatio
 
   return (
     <FlatList
-      data={entries}
+      data={visibleEntries}
       renderItem={renderEntry}
       keyExtractor={(item) => item.id}
       style={styles.screenList}
@@ -1077,29 +948,37 @@ function EntriesScreen({ entries, parents, parentColors, children, parentLocatio
       initialNumToRender={10}
       windowSize={7}
       ListHeaderComponent={(
+        <View>
         <View style={styles.screenIntroRow}>
           <View style={{ flex: 1 }}>
             <Text style={styles.screenTitle}>Custody entries</Text>
-            <Text style={styles.screenSub}>Open an entry to review or change its details.</Text>
+            <Text style={styles.screenSub}>{visibleEntries.length} {period === 'all' ? 'recorded' : 'current and upcoming'} {visibleEntries.length === 1 ? 'period' : 'periods'}</Text>
           </View>
           <TouchableOpacity style={styles.iconPrimaryButton} onPress={onAdd} accessibilityRole="button" accessibilityLabel="Add custody entry">
             <Ionicons name="add" size={24} color="#fff" />
           </TouchableOpacity>
         </View>
+        <View style={styles.segment} accessibilityRole="tablist">
+          {['upcoming', 'all'].map((value) => <Pressable key={value} onPress={() => setPeriod(value)}
+            accessibilityRole="tab" accessibilityState={{ selected: period === value }}
+            style={[styles.segmentBtn, period === value && styles.segmentBtnActive]}>
+            <Text style={[styles.segmentText, period === value && styles.segmentTextActive]}>{value === 'all' ? 'All entries' : 'Upcoming'}</Text>
+          </Pressable>)}
+        </View>
+        </View>
       )}
       ListEmptyComponent={(
         <View style={styles.emptyState}>
           <Ionicons name="calendar-clear-outline" size={34} color="#9ca3af" />
-          <Text style={styles.emptyStateTitle}>No custody entries</Text>
-          <Text style={styles.emptyStateText}>Add an entry here or select a date range on the calendar.</Text>
+          <Text style={styles.emptyStateTitle}>{period === 'upcoming' ? 'No upcoming entries' : 'No custody entries'}</Text>
           <TouchableOpacity style={styles.btnPrimary} onPress={onAdd}>
             <Text style={styles.btnText}>Add entry</Text>
           </TouchableOpacity>
         </View>
       )}
-      ListFooterComponent={entries.length ? (
+      ListFooterComponent={visibleEntries.length ? (
         <View style={styles.listFooter}>
-          <Text style={styles.listFooterText}>Entered custody days</Text>
+          <Text style={styles.listFooterText}>Listed entry-days</Text>
           <Text style={styles.listFooterValue}>{totalDays}</Text>
         </View>
       ) : null}
@@ -1145,8 +1024,8 @@ function EntryEditor({ entry, parents, children, parentLocations, onClose, onDel
                 <Switch
                   value={Boolean(entry.isException)}
                   onValueChange={(value) => onUpdate(entry.id, 'isException', value)}
-                  trackColor={{ false: '#d1d5db', true: '#93c5fd' }}
-                  thumbColor={entry.isException ? '#2563eb' : '#f3f4f6'}
+                  accessibilityLabel="Holiday or exception"
+                  trackColor={{ false: '#d1d5db', true: theme.accent }}
                 />
               </View>
             </View>
@@ -1180,8 +1059,8 @@ function EntryEditor({ entry, parents, children, parentLocations, onClose, onDel
                     <Switch
                       value={Boolean(entry.childrenPresent?.[child])}
                       onValueChange={(value) => onUpdate(entry.id, 'childrenPresent', { ...entry.childrenPresent, [child]: value })}
-                      trackColor={{ false: '#d1d5db', true: '#93c5fd' }}
-                      thumbColor={entry.childrenPresent?.[child] ? '#2563eb' : '#f3f4f6'}
+                      accessibilityLabel={'Include ' + child}
+                      trackColor={{ false: '#d1d5db', true: theme.accent }}
                     />
                   </View>
                 ))}
@@ -1199,7 +1078,8 @@ function EntryEditor({ entry, parents, children, parentLocations, onClose, onDel
               />
 
               <Text style={[styles.fieldLabel, { marginTop: 16 }]}>Exchange</Text>
-              <TouchableOpacity style={styles.selectBtn} onPress={() => onOpenTime(entry.id, entry.exchangeTime)} accessibilityRole="button">
+              <View style={styles.toolRow}>
+              <TouchableOpacity style={[styles.selectBtn, { flex: 1 }]} onPress={() => onOpenTime(entry.id, entry.exchangeTime)} accessibilityRole="button" accessibilityLabel={'Exchange time, ' + (entry.exchangeTime || 'not set')}>
                 <View style={styles.pickerRowLabel}>
                   <Ionicons name="time-outline" size={19} color="#6b7280" />
                   <Text style={entry.exchangeTime ? styles.selectBtnText : styles.selectBtnPlaceholder}>{entry.exchangeTime || 'Exchange time'}</Text>
@@ -1207,15 +1087,11 @@ function EntryEditor({ entry, parents, children, parentLocations, onClose, onDel
                 <Ionicons name="chevron-forward" size={18} color="#9ca3af" />
               </TouchableOpacity>
               {entry.exchangeTime ? (
-                <TouchableOpacity
-                  style={{ alignSelf: 'flex-end', minHeight: 44, minWidth: 44, alignItems: 'center', justifyContent: 'center' }}
+                <IconButton icon="close-circle-outline" label="Clear exchange time"
                   onPress={() => onUpdate(entry.id, 'exchangeTime', '')}
-                  accessibilityRole="button"
-                  accessibilityLabel="Clear exchange time"
-                >
-                  <Ionicons name="close-circle-outline" size={24} color="#6b7280" />
-                </TouchableOpacity>
+                />
               ) : null}
+              </View>
               <TextInput
                 style={styles.input}
                 value={entry.exchangePlace || ''}
@@ -1224,12 +1100,12 @@ function EntryEditor({ entry, parents, children, parentLocations, onClose, onDel
                 autoCapitalize="words"
               />
 
-              <Text style={[styles.fieldLabel, { marginTop: 16 }]}>Note</Text>
+              <Text style={[styles.fieldLabel, { marginTop: 16 }]}>Parent note</Text>
               <TextInput
                 style={[styles.input, styles.notesInput]}
                 value={entry.note || ''}
                 onChangeText={(value) => onUpdate(entry.id, 'note', value)}
-                placeholder="Optional note"
+                placeholder="Optional parent note"
                 multiline
                 textAlignVertical="top"
               />
@@ -1248,6 +1124,7 @@ function EntryEditor({ entry, parents, children, parentLocations, onClose, onDel
 // ── App ───────────────────────────────────────────────────────────────────────
 
 export default function App() {
+  const currentDay = useToday();
   const [parents, setParents] = useState([]);
   const [children, setChildren] = useState([]);
   const [parentColors, setParentColors] = useState({});
@@ -1758,9 +1635,10 @@ export default function App() {
         importantForAccessibility={(editingEntry || showWizard || showScheduleGen) ? 'no-hide-descendants' : 'auto'}
       >
       <View style={styles.appHeader}>
+        <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={styles.brandMark}><Ionicons name="calendar-outline" size={23} color={theme.accent} /></View>
         <View style={{ flex: 1 }}>
           <Text style={styles.headerTitle}>Custody Calendar</Text>
-          {children.length > 0 && <Text style={styles.headerSub} numberOfLines={1}>{children.join(' & ')}</Text>}
+          <Text style={styles.headerSub}>On this device</Text>
         </View>
       </View>
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
@@ -1771,15 +1649,16 @@ export default function App() {
             parentColors={parentColors}
             children={children}
             parentLocations={parentLocations}
-            totalDays={footerTotals.totalDays}
+            today={currentDay}
             onAdd={addRow}
             onSelect={setEditingEntryId}
           />
         ) : (
-        <ScrollView style={styles.scroll} contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
+        <ScrollView key={viewMode} style={styles.scroll} contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag">
 
           {viewMode === 'kid' ? (
             <KidView
+              today={currentDay}
               entries={entries}
               parents={parents}
               parentColors={parentColors}
@@ -1789,18 +1668,17 @@ export default function App() {
               childColors={childColors}
             />
           ) : viewMode === 'calendar' ? (
-            <CalendarView entries={entries} parents={parents} parentColors={parentColors} children={children} childColors={childColors} onCreateEntry={createEntryFromCalendar} />
+            <CalendarView today={currentDay} entries={entries} parents={parents} parentColors={parentColors} parentLocations={parentLocations} children={children} childColors={childColors} onCreateEntry={createEntryFromCalendar} onOpenEntry={setEditingEntryId} />
           ) : viewMode === 'settings' ? (
           <>
           <View style={styles.screenIntro}>
             <Text style={styles.screenTitle}>Settings</Text>
-            <Text style={styles.screenSub}>Household, schedules, sharing, and local data.</Text>
           </View>
 
           <View style={styles.card}>
             <View style={styles.sectionHeader}>
               <Text style={styles.sectionTitle}>Household</Text>
-              <TouchableOpacity onPress={() => setShowWizard(true)} accessibilityRole="button">
+              <TouchableOpacity style={{ minHeight: 44, justifyContent: 'center' }} onPress={() => setShowWizard(true)} accessibilityRole="button">
                 <Text style={styles.toggleBtn}>Guided edit</Text>
               </TouchableOpacity>
             </View>
@@ -1810,18 +1688,14 @@ export default function App() {
                 <View style={styles.tagRow}>
                   {parents.map((p, i) => (
                     <View key={p} style={styles.tag}>
-                      <TouchableOpacity onPress={() => setColorPicker({ type: 'parent', name: p })} accessibilityRole="button" accessibilityLabel={`Change color for ${p}`}>
-                        <View style={[styles.tagSwatch, { backgroundColor: colorForName(p, parents, parentColors) }]} />
+                      <TouchableOpacity style={styles.colorButton} onPress={() => setColorPicker({ type: 'parent', name: p })} accessibilityRole="button" accessibilityLabel={`Change color for ${p}`}>
+                        <PersonBadge name={p} color={colorForName(p, parents, parentColors)} />
                       </TouchableOpacity>
                       <Text style={styles.tagText}>{p}{i === 0 ? ' (Primary)' : ''}</Text>
                       {i !== 0 && (
-                        <TouchableOpacity onPress={() => setPrimary(p)} accessibilityRole="button" accessibilityLabel={`Make ${p} the primary parent`}>
-                          <Text style={styles.tagStar}>☆</Text>
-                        </TouchableOpacity>
+                        <IconButton icon="star-outline" label={`Make ${p} the primary parent`} onPress={() => setPrimary(p)} />
                       )}
-                      <TouchableOpacity onPress={() => removeParent(p)} disabled={parents.length === 1} accessibilityRole="button" accessibilityLabel={`Remove ${p}`}>
-                        <Text style={[styles.tagX, parents.length === 1 && styles.tagXDisabled]}>×</Text>
-                      </TouchableOpacity>
+                      <IconButton icon="remove-circle-outline" label={`Remove ${p}`} onPress={() => removeParent(p)} disabled={parents.length === 1} />
                     </View>
                   ))}
                 </View>
@@ -1834,16 +1708,14 @@ export default function App() {
                     placeholder="New parent name"
                     returnKeyType="done"
                   />
-                  <TouchableOpacity style={styles.btnPrimary} onPress={addParent}>
-                    <Text style={styles.btnText}>Add</Text>
-                  </TouchableOpacity>
+                  <IconButton icon="add" label="Add parent" active onPress={addParent} />
                 </View>
 
                 {/* Where each parent lives — used as the default location for their days */}
                 {parents.length > 0 && (
                   <View style={{ marginTop: 14 }}>
                     <Text style={styles.fieldLabel}>Home & contact</Text>
-                    <Text style={styles.calHint}>Used as the default place for each parent's days, so the kids know where they'll be.</Text>
+                    <Text style={styles.calHint}>Included in My Days and shared child schedules.</Text>
                     {parents.map((p) => (
                       <View key={p} style={styles.detailBlock}>
                         <View style={styles.detailHeader}>
@@ -1874,13 +1746,11 @@ export default function App() {
                 <View style={styles.tagRow}>
                   {children.map((c) => (
                     <View key={c} style={styles.tag}>
-                      <TouchableOpacity onPress={() => setColorPicker({ type: 'child', name: c })} accessibilityRole="button" accessibilityLabel={`Change color for ${c}`}>
-                        <View style={[styles.tagSwatch, { backgroundColor: colorForName(c, children, childColors) }]} />
+                      <TouchableOpacity style={styles.colorButton} onPress={() => setColorPicker({ type: 'child', name: c })} accessibilityRole="button" accessibilityLabel={`Change color for ${c}`}>
+                        <PersonBadge name={c} color={colorForName(c, children, childColors)} />
                       </TouchableOpacity>
                       <Text style={styles.tagText}>{c}</Text>
-                      <TouchableOpacity onPress={() => removeChild(c)} disabled={children.length === 1} accessibilityRole="button" accessibilityLabel={`Remove ${c}`}>
-                        <Text style={[styles.tagX, children.length === 1 && styles.tagXDisabled]}>×</Text>
-                      </TouchableOpacity>
+                      <IconButton icon="remove-circle-outline" label={`Remove ${c}`} onPress={() => removeChild(c)} disabled={children.length === 1} />
                     </View>
                   ))}
                 </View>
@@ -1893,9 +1763,7 @@ export default function App() {
                     placeholder="New child name"
                     returnKeyType="done"
                   />
-                  <TouchableOpacity style={styles.btnPrimary} onPress={addChild}>
-                    <Text style={styles.btnText}>Add</Text>
-                  </TouchableOpacity>
+                  <IconButton icon="add" label="Add child" active onPress={addChild} />
                 </View>
 
               </View>
@@ -1949,7 +1817,7 @@ export default function App() {
           <>
           <View style={styles.screenIntro}>
             <Text style={styles.screenTitle}>Reports</Text>
-            <Text style={styles.screenSub}>Compare custody time by child and reporting period.</Text>
+            <Text style={styles.screenSub}>Recorded schedule and primary-parent defaults</Text>
           </View>
 
           <View style={styles.card}>
@@ -2035,23 +1903,14 @@ export default function App() {
                 )}
 
                 {/* Analysis child */}
-                <Text style={[styles.fieldLabel, { marginTop: 12 }]}>Analysis</Text>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                  <View style={styles.chipRow}>
-                    {['all', ...children].map((c) => (
-                      <TouchableOpacity key={c} style={[styles.chip, analysisChild === c && styles.chipActive]} onPress={() => setAnalysisChild(c)}>
-                        <Text style={[styles.chipText, analysisChild === c && styles.chipTextActive]}>
-                          {c === 'all' ? 'All Children' : c}
-                        </Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-                </ScrollView>
+                <Text style={[styles.fieldLabel, { marginTop: 12 }]}>Children</Text>
+                <ChildSelector children={children} includeAll value={analysisChild === 'all' ? null : analysisChild}
+                  onChange={(child) => setAnalysisChild(child || 'all')} colors={(child) => colorForName(child, children, childColors)} />
 
                 <Text style={styles.windowInfo}>
-                  Window: {reportingWindow.start || 'not set'} → {reportingWindow.end || 'not set'}
+                  {reportingWindow.start && reportingWindow.end ? displayDate(reportingWindow.start) + ' - ' + displayDate(reportingWindow.end) : 'No reporting period selected'}
                 </Text>
-                <Text style={styles.windowInfo}>{analysisChild === 'all' ? 'Counted child-days' : 'Counted custody days'}: {summaryResult.totalUnits}</Text>
+                {reportingWindow.start && reportingWindow.end && <Text style={styles.windowInfo}>{analysisChild === 'all' ? 'Counted child-days' : 'Counted custody days'}: {summaryResult.totalUnits}</Text>}
                 {summaryResult.conflictDays > 0 && (
                   <Text style={styles.calConflictNote}>{summaryResult.conflictDays} conflicting child-day(s) excluded from this report.</Text>
                 )}
@@ -2059,20 +1918,18 @@ export default function App() {
                 {windowSummary.length > 0 && (
                   <View style={{ marginTop: 12 }}>
                     <Text style={styles.fieldLabel}>Summary by Parent</Text>
-                    <View style={styles.table}>
-                      <View style={[styles.tableRow, styles.tableHeader]}>
-                        {['Parent', 'Custody days', 'Share'].map((h) => (
-                          <Text key={h} style={[styles.tableCell, styles.tableCellHeader]}>{h}</Text>
-                        ))}
-                      </View>
-                      {windowSummary.map((item, i) => (
-                        <View key={i} style={[styles.tableRow, i % 2 === 1 && styles.tableRowAlt]}>
-                          <Text style={styles.tableCell}>{item.parent}</Text>
-                          <Text style={styles.tableCell}>{item.custodyDays}</Text>
-                          <Text style={styles.tableCell}>{item.percentage}%</Text>
+                    {windowSummary.map((item) => (
+                      <View key={item.parent} style={styles.reportRow} accessible
+                        accessibilityLabel={`${item.parent}, ${item.custodyDays} ${analysisChild === 'all' ? 'child-days' : 'days'}, ${item.percentage} percent`}>
+                        <View style={styles.personLine}>
+                          <PersonBadge name={item.parent} color={colorForName(item.parent, parents, parentColors)} small />
+                          <Text style={styles.parentChoiceText}>{item.parent}</Text>
+                          <Text style={styles.reportValue}>{item.percentage}%</Text>
                         </View>
-                      ))}
-                    </View>
+                        <Text style={styles.reportDays}>{item.custodyDays} {analysisChild === 'all' ? 'child-days' : 'days'}</Text>
+                        <View style={styles.reportTrack}><View style={{ height: '100%', width: `${Math.min(100, Math.max(0, Number(item.percentage) || 0))}%`, backgroundColor: colorForName(item.parent, parents, parentColors) }} /></View>
+                      </View>
+                    ))}
                   </View>
                 )}
               </View>
@@ -2115,29 +1972,38 @@ export default function App() {
         animationType="fade"
         onRequestClose={() => setParentPickerEntryId(null)}
       >
-        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setParentPickerEntryId(null)}>
-          <View style={styles.modalBox}>
-            <Text style={styles.modalTitle}>Select Parent</Text>
+        <View style={styles.pickerOverlay}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setParentPickerEntryId(null)} accessibilityLabel="Cancel parent selection" />
+          <SafeAreaView edges={['bottom']} style={styles.pickerSheet}>
+          <View style={{ padding: 20 }}>
+            <SectionHeading title="Parent">
+              <IconButton icon="close" label="Close parent selection" onPress={() => setParentPickerEntryId(null)} />
+            </SectionHeading>
             {parents.length === 0 && (
-              <Text style={styles.modalEmpty}>No parents configured yet. Add parents in Configuration.</Text>
+              <Text style={styles.modalEmpty}>No parents added. Household details are in Settings.</Text>
             )}
+            <ScrollView style={{ maxHeight: 300 }}>
             {parents.map((p) => (
               <TouchableOpacity
                 key={p}
-                style={styles.modalOption}
+                accessibilityRole="radio"
+                accessibilityState={{ checked: entries.find((e) => e.id === parentPickerEntryId)?.parent === p }}
+                accessibilityLabel={p}
+                style={[styles.parentChoice, { marginBottom: 8 }]}
                 onPress={() => {
                   updateEntry(parentPickerEntryId, 'parent', p);
                   setParentPickerEntryId(null);
                 }}
               >
-                <Text style={styles.modalOptionText}>{p}</Text>
+                <PersonBadge name={p} color={colorForName(p, parents, parentColors)} />
+                <Text style={styles.parentChoiceText}>{p}</Text>
+                <Ionicons name={entries.find((e) => e.id === parentPickerEntryId)?.parent === p ? 'radio-button-on' : 'radio-button-off'} size={22} color={theme.accent} />
               </TouchableOpacity>
             ))}
-            <TouchableOpacity style={styles.modalCancel} onPress={() => setParentPickerEntryId(null)}>
-              <Text style={styles.modalCancelText}>Cancel</Text>
-            </TouchableOpacity>
+            </ScrollView>
           </View>
-        </TouchableOpacity>
+          </SafeAreaView>
+        </View>
       </Modal>
 
       {/* Color Picker Modal */}
@@ -2158,6 +2024,9 @@ export default function App() {
                 return (
                   <TouchableOpacity
                     key={c}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Color ${c}`}
+                    accessibilityState={{ selected: current === c }}
                     onPress={() => setColor(colorPicker.type, colorPicker.name, c)}
                     style={[styles.swatchChoice, { backgroundColor: c }, current === c && styles.swatchChoiceSelected]}
                   />
@@ -2317,22 +2186,58 @@ export default function App() {
 // ── styles ────────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: '#f9fafb' },
+  reportRow: { paddingVertical: 18, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: theme.line },
+  reportValue: { fontSize: 20, fontWeight: '700', color: theme.ink },
+  reportDays: { fontSize: 13, color: theme.muted, marginVertical: 10 },
+  reportTrack: { height: 6, backgroundColor: '#e7eae8', borderRadius: 3, overflow: 'hidden' },
+  calendarSurface: { paddingBottom: 20 },
+  sectionBand: { paddingVertical: 24, borderTopWidth: 1, borderTopColor: theme.line },
+  calYear: { fontWeight: '400', color: theme.muted },
+  toolRow: { flexDirection: 'row', gap: 6 },
+  calendarWeek: { flexDirection: 'row' },
+  todayDot: { width: 4, height: 4, borderRadius: 2, position: 'absolute', bottom: 4 },
+  splitNumber: { backgroundColor: '#fff', color: theme.ink, paddingHorizontal: 4, borderRadius: 3, overflow: 'hidden' },
+  selectedTick: { position: 'absolute', right: -1, bottom: -1, width: 14, height: 14, backgroundColor: theme.ink, borderTopLeftRadius: 4, alignItems: 'center', justifyContent: 'center' },
+  dayMarker: { position: 'absolute', top: 1, right: 1 },
+  calendarLegend: { flexDirection: 'row', flexWrap: 'wrap', gap: 14, marginTop: 16 },
+  legendItem: { flexDirection: 'row', alignItems: 'center' },
+  legendCaption: { fontSize: 12, color: theme.muted },
+  rangeStatus: { minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 8, paddingLeft: 10, marginBottom: 12, backgroundColor: theme.soft, borderRadius: 8 },
+  rangeStatusText: { flex: 1, fontSize: 14, color: theme.accent, fontWeight: '600' },
+  parentChoices: { gap: 8, marginVertical: 16 },
+  parentChoice: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 12, minHeight: 54, borderRadius: 8, borderWidth: 1, borderColor: theme.line },
+  parentChoiceSelected: { backgroundColor: theme.soft, borderColor: theme.accent },
+  parentChoiceText: { flex: 1, fontSize: 15, color: theme.ink },
+  saveRangeButton: { minHeight: 48, borderRadius: 8, backgroundColor: theme.accent, flexDirection: 'row', gap: 8, alignItems: 'center', justifyContent: 'center', marginTop: 16 },
+  dayDetail: { paddingVertical: 16, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: theme.line },
+  personLine: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  detailChild: { fontSize: 13, color: theme.muted },
+  detailParent: { fontSize: 17, fontWeight: '700', color: theme.ink, marginTop: 3 },
+  sourceLabel: { fontSize: 12, fontWeight: '600', color: theme.accent, marginTop: 12 },
+  conflictEntry: { flexDirection: 'row', minHeight: 44, alignItems: 'center', borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: theme.line },
+  kidTodayBand: { paddingVertical: 20, paddingHorizontal: 18, borderLeftWidth: 4, backgroundColor: theme.canvas, marginBottom: 8 },
+  kidHome: { width: 60, height: 60, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
+  timelineRail: { width: 24, alignItems: 'center', alignSelf: 'stretch', justifyContent: 'center', marginRight: 10, borderLeftWidth: 1, borderLeftColor: theme.line },
+  timelineDot: { width: 10, height: 10, borderRadius: 5 },
+  safeArea: { flex: 1, backgroundColor: theme.paper },
   scroll: { flex: 1 },
-  container: { padding: 16, paddingBottom: 48 },
+  container: { padding: 20, paddingBottom: 32, width: '100%', maxWidth: 760, alignSelf: 'center' },
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   loadingText: { fontSize: 16, color: '#6b7280' },
 
   appHeader: {
-    minHeight: 58,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    justifyContent: 'center',
-    backgroundColor: '#f9fafb',
+    minHeight: 68,
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: theme.paper,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: '#e5e7eb',
   },
-  headerTitle: { fontSize: 22, fontWeight: '700', color: '#111827' },
+  headerTitle: { fontSize: 20, fontWeight: '700', color: theme.ink },
+  brandMark: { width: 42, height: 42, borderRadius: 8, backgroundColor: theme.soft, alignItems: 'center', justifyContent: 'center' },
   headerSub: { fontSize: 13, color: '#6b7280', marginTop: 1 },
   bottomBar: {
     minHeight: 62,
@@ -2344,8 +2249,10 @@ const styles = StyleSheet.create({
     paddingTop: 6,
   },
   bottomTab: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 2, minWidth: 0 },
-  bottomTabLabel: { fontSize: 10, color: '#6b7280', fontWeight: '500' },
-  bottomTabLabelActive: { color: '#2563eb', fontWeight: '700' },
+  bottomTabLabel: { fontSize: 11, color: theme.muted, fontWeight: '500', textAlign: 'center' },
+  bottomTabLabelActive: { color: theme.accent, fontWeight: '700' },
+  tabIconFrame: { width: 48, height: 30, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
+  tabIconFrameActive: { backgroundColor: theme.soft },
   screenIntro: { marginBottom: 14 },
   screenIntroRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 18 },
   screenTitle: { fontSize: 20, fontWeight: '700', color: '#111827' },
@@ -2353,22 +2260,17 @@ const styles = StyleSheet.create({
   iconPrimaryButton: {
     width: 44,
     height: 44,
-    borderRadius: 22,
-    backgroundColor: '#2563eb',
+    borderRadius: 8,
+    backgroundColor: theme.accent,
     alignItems: 'center',
     justifyContent: 'center',
   },
 
   card: {
-    backgroundColor: '#fff',
-    borderRadius: 8,
-    padding: 16,
+    paddingVertical: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.line,
     marginBottom: 12,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.06,
-    shadowRadius: 4,
-    elevation: 2,
   },
   sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
   sectionTitle: { fontSize: 16, fontWeight: '600', color: '#111827' },
@@ -2384,18 +2286,18 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
 
-  tagRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 10 },
+  tagRow: { gap: 8, marginBottom: 12 },
   tag: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#eff6ff',
-    borderRadius: 20,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderWidth: 1,
-    borderColor: '#bfdbfe',
+    gap: 8,
+    minHeight: 60,
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.line,
   },
-  tagText: { fontSize: 13, color: '#1d4ed8', marginRight: 4 },
+  tagText: { flex: 1, fontSize: 15, color: theme.ink },
+  colorButton: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
   tagSwatch: { width: 14, height: 14, borderRadius: 4, marginRight: 6, borderWidth: 1, borderColor: 'rgba(0,0,0,0.15)' },
   detailBlock: { backgroundColor: '#f9fafb', borderRadius: 8, padding: 10, marginTop: 8 },
   detailHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 6 },
@@ -2403,7 +2305,7 @@ const styles = StyleSheet.create({
   tagStar: { fontSize: 15, color: '#6b7280', marginRight: 4 },
   tagX: { fontSize: 18, color: '#dc2626', lineHeight: 20 },
   swatchGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, padding: 16 },
-  swatchChoice: { width: 36, height: 36, borderRadius: 18, borderWidth: 2, borderColor: '#e5e7eb' },
+  swatchChoice: { width: 44, height: 44, borderRadius: 8, borderWidth: 2, borderColor: '#e5e7eb' },
   swatchChoiceSelected: { borderColor: '#111827', borderWidth: 3 },
   wizTitle: { fontSize: 20, fontWeight: '700', color: '#111827', marginBottom: 6 },
   wizSub: { fontSize: 13, color: '#6b7280', marginBottom: 14, lineHeight: 18 },
@@ -2417,6 +2319,7 @@ const styles = StyleSheet.create({
 
   inputRow: { flexDirection: 'row', gap: 8, alignItems: 'center' },
   input: {
+    minHeight: 48,
     borderWidth: 1,
     borderColor: '#d1d5db',
     borderRadius: 8,
@@ -2428,15 +2331,15 @@ const styles = StyleSheet.create({
   },
 
   actionRow: { flexDirection: 'row', gap: 8, marginBottom: 12, flexWrap: 'wrap' },
-  btnPrimary: { backgroundColor: '#2563eb', paddingHorizontal: 14, paddingVertical: 9, borderRadius: 8 },
-  btnSuccess: { backgroundColor: '#16a34a', paddingHorizontal: 14, paddingVertical: 9, borderRadius: 8 },
-  btnDanger: { backgroundColor: '#dc2626', paddingHorizontal: 14, paddingVertical: 9, borderRadius: 8 },
+  btnPrimary: { backgroundColor: theme.accent, minHeight: 44, justifyContent: 'center', paddingHorizontal: 14, paddingVertical: 10, borderRadius: 8 },
+  btnSuccess: { backgroundColor: theme.accent, minHeight: 44, justifyContent: 'center', paddingHorizontal: 14, paddingVertical: 10, borderRadius: 8 },
+  btnDanger: { backgroundColor: '#b42318', minHeight: 44, justifyContent: 'center', paddingHorizontal: 14, paddingVertical: 10, borderRadius: 8 },
   btnDisabled: { opacity: 0.45 },
   btnText: { color: '#fff', fontWeight: '600', fontSize: 14 },
   inlineError: { color: '#b91c1c', fontSize: 12, marginTop: 8, lineHeight: 17 },
 
   screenList: { flex: 1 },
-  listContent: { padding: 16, paddingBottom: 28, flexGrow: 1 },
+  listContent: { padding: 20, paddingBottom: 28, flexGrow: 1, width: '100%', maxWidth: 760, alignSelf: 'center' },
   entrySummary: {
     minHeight: 94,
     flexDirection: 'row',
@@ -2487,22 +2390,22 @@ const styles = StyleSheet.create({
   },
   editorHeaderSide: { minWidth: 52, minHeight: 44, alignItems: 'flex-end', justifyContent: 'center' },
   editorHeaderTitle: { fontSize: 16, fontWeight: '700', color: '#111827' },
-  editorDone: { fontSize: 16, color: '#2563eb', fontWeight: '700' },
-  editorContent: { padding: 16, paddingBottom: 36 },
-  editorSection: { backgroundColor: '#fff', borderRadius: 8, padding: 15, marginBottom: 12, borderWidth: 1, borderColor: '#e5e7eb' },
+  editorDone: { fontSize: 16, color: theme.accent, fontWeight: '700' },
+  editorContent: { padding: 20, paddingBottom: 36, width: '100%', maxWidth: 760, alignSelf: 'center' },
+  editorSection: { paddingVertical: 16, marginBottom: 12, borderBottomWidth: 1, borderBottomColor: theme.line },
   editorFieldTitle: { fontSize: 15, color: '#111827', fontWeight: '600' },
   editorFieldHelp: { fontSize: 12, color: '#6b7280', marginTop: 2 },
   editorDuration: { fontSize: 12, color: '#1d4ed8', fontWeight: '600', marginTop: 3 },
   editorToggleRow: { minHeight: 46, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: '#e5e7eb' },
   managedNotice: { flexDirection: 'row', gap: 8, alignItems: 'flex-start', backgroundColor: '#eff6ff', borderRadius: 8, padding: 12, marginBottom: 12 },
   managedNoticeText: { flex: 1, fontSize: 12, lineHeight: 17, color: '#1e40af' },
-  pickerRowLabel: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  pickerRowLabel: { flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 },
   notesInput: { minHeight: 88, paddingTop: 10 },
   deleteEntryButton: { minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, borderRadius: 8, borderWidth: 1, borderColor: '#fecaca', backgroundColor: '#fff' },
   deleteEntryText: { fontSize: 14, color: '#dc2626', fontWeight: '600' },
 
   pickerOverlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.32)' },
-  pickerSheet: { backgroundColor: '#fff', borderTopLeftRadius: 16, borderTopRightRadius: 16, overflow: 'hidden' },
+  pickerSheet: { backgroundColor: '#fff', borderTopLeftRadius: 8, borderTopRightRadius: 8, overflow: 'hidden' },
   pickerToolbar: { minHeight: 50, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: '#d1d5db' },
   pickerTitle: { fontSize: 15, fontWeight: '700', color: '#111827' },
   pickerCancel: { fontSize: 16, color: '#6b7280' },
@@ -2520,6 +2423,8 @@ const styles = StyleSheet.create({
   tabRow: { flexDirection: 'row', gap: 6, marginBottom: 12 },
   tab: {
     flex: 1,
+    minHeight: 44,
+    justifyContent: 'center',
     paddingVertical: 7,
     borderRadius: 8,
     borderWidth: 1,
@@ -2527,12 +2432,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     backgroundColor: '#fff',
   },
-  tabActive: { backgroundColor: '#2563eb', borderColor: '#2563eb' },
+  tabActive: { backgroundColor: theme.accent, borderColor: theme.accent },
   tabText: { fontSize: 13, color: '#6b7280', fontWeight: '500' },
   tabTextActive: { color: '#fff' },
 
   dateRow: { flexDirection: 'row', gap: 8, marginBottom: 10 },
   dateBtn: {
+    minHeight: 48,
+    justifyContent: 'center',
     borderWidth: 1,
     borderColor: '#d1d5db',
     borderRadius: 8,
@@ -2558,6 +2465,8 @@ const styles = StyleSheet.create({
 
   chipRow: { flexDirection: 'row', gap: 6, flexWrap: 'wrap', marginBottom: 4 },
   chip: {
+    minHeight: 44,
+    justifyContent: 'center',
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 20,
@@ -2565,7 +2474,7 @@ const styles = StyleSheet.create({
     borderColor: '#d1d5db',
     backgroundColor: '#fff',
   },
-  chipActive: { backgroundColor: '#2563eb', borderColor: '#2563eb' },
+  chipActive: { backgroundColor: theme.accent, borderColor: theme.accent },
   chipText: { fontSize: 13, color: '#374151' },
   chipTextActive: { color: '#fff', fontWeight: '600' },
 
@@ -2582,8 +2491,8 @@ const styles = StyleSheet.create({
     shadowRadius: 6,
     elevation: 3,
   },
-  kidTodayLabel: { color: 'rgba(255,255,255,0.85)', fontSize: 12, fontWeight: '700', letterSpacing: 1.5, marginBottom: 4 },
-  kidTodayWho: { color: '#fff', fontSize: 28, fontWeight: '800', marginBottom: 8 },
+  kidTodayLabel: { color: 'rgba(255,255,255,0.85)', fontSize: 12, fontWeight: '700', letterSpacing: 0, marginBottom: 4 },
+  kidTodayWho: { color: theme.ink, fontSize: 24, fontWeight: '700', marginTop: 4 },
   kidTodayMeta: { color: 'rgba(255,255,255,0.95)', fontSize: 15, marginTop: 3 },
   kidNextWho: { fontSize: 20, fontWeight: '700', color: '#111827', marginTop: 2 },
   kidNextWhen: { fontSize: 15, color: '#374151', marginTop: 3 },
@@ -2596,7 +2505,7 @@ const styles = StyleSheet.create({
 
   // View toggle (segmented control)
   segment: { flexDirection: 'row', backgroundColor: '#e5e7eb', borderRadius: 10, padding: 3, marginBottom: 12 },
-  segmentBtn: { flex: 1, paddingVertical: 8, borderRadius: 8, alignItems: 'center' },
+  segmentBtn: { flex: 1, minHeight: 44, paddingVertical: 8, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
   segmentBtnActive: {
     backgroundColor: '#fff',
     shadowColor: '#000',
@@ -2609,25 +2518,25 @@ const styles = StyleSheet.create({
   segmentTextActive: { color: '#111827', fontWeight: '700' },
 
   // Calendar
-  calNav: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
+  calNav: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 },
   calNavBtn: { paddingHorizontal: 16, paddingVertical: 4 },
   calNavArrow: { fontSize: 26, color: '#2563eb', fontWeight: '600' },
-  calNavTitle: { fontSize: 17, fontWeight: '700', color: '#111827' },
+  calNavTitle: { fontSize: 18, fontWeight: '700', color: theme.ink },
   calWeekRow: { flexDirection: 'row', marginBottom: 4 },
-  calWeekday: { flex: 1, textAlign: 'center', fontSize: 12, fontWeight: '600', color: '#9ca3af' },
+  calWeekday: { flex: 1, textAlign: 'center', fontSize: 12, fontWeight: '600', color: theme.muted, paddingBottom: 6 },
   calGrid: { flexDirection: 'row', flexWrap: 'wrap' },
-  calCell: { width: `${100 / 7}%`, aspectRatio: 1, padding: 2 },
+  calCell: { flex: 1, minWidth: 0, aspectRatio: 1, padding: 2 },
   calDay: { flex: 1, borderRadius: 8, alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: 'transparent' },
   calDayNum: { fontSize: 14, fontWeight: '600' },
   calDayNumOverlay: { zIndex: 2, textShadowColor: 'rgba(0,0,0,0.55)', textShadowRadius: 2, textShadowOffset: { width: 0, height: 1 } },
   calSplitFill: { ...StyleSheet.absoluteFillObject, flexDirection: 'row', borderRadius: 6, overflow: 'hidden' },
   calHolidayMark: { position: 'absolute', top: 0, right: 1, fontSize: 9, zIndex: 3 },
   calDayToday: { fontWeight: '800', textDecorationLine: 'underline' },
-  calDaySelected: { borderColor: '#111827', borderWidth: 3 },
+  calDaySelected: { borderColor: '#182421', borderWidth: 2 },
   calDayConflict: { borderColor: '#dc2626', borderWidth: 2, borderStyle: 'dashed' },
   calConflictNote: { fontSize: 12, color: '#dc2626', marginTop: 8 },
   calSplitNote: { fontSize: 12, color: '#4f46e5', marginTop: 8 },
-  calHint: { fontSize: 12, color: '#9ca3af', marginTop: 10, lineHeight: 17 },
+  calHint: { fontSize: 12, color: theme.muted, marginTop: 10, lineHeight: 18 },
   calSelectHint: { fontSize: 12, color: '#2563eb', textAlign: 'center', marginBottom: 10 },
   legendRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 5 },
   legendSwatch: { width: 16, height: 16, borderRadius: 4, marginRight: 10 },
@@ -2661,6 +2570,7 @@ const styles = StyleSheet.create({
   deleteBtnDisabled: { opacity: 0.3 },
 
   selectBtn: {
+    minHeight: 48,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
@@ -2672,8 +2582,8 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
     marginBottom: 12,
   },
-  selectBtnText: { fontSize: 14, color: '#111827' },
-  selectBtnPlaceholder: { fontSize: 14, color: '#9ca3af' },
+  selectBtnText: { fontSize: 15, color: theme.ink, flexShrink: 1 },
+  selectBtnPlaceholder: { fontSize: 15, color: theme.muted, flexShrink: 1 },
   selectArrow: { fontSize: 18, color: '#9ca3af' },
 
   durationBadge: {
@@ -2688,7 +2598,7 @@ const styles = StyleSheet.create({
   durationText: { fontSize: 13, color: '#1d4ed8', fontWeight: '500' },
 
   switchRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 6 },
-  switchLabel: { fontSize: 14, color: '#374151' },
+  switchLabel: { fontSize: 15, color: theme.ink, flex: 1, paddingRight: 12 },
 
   footer: {
     backgroundColor: '#f3f4f6',
@@ -2702,7 +2612,7 @@ const styles = StyleSheet.create({
 
   wizardOverlay: { ...StyleSheet.absoluteFillObject, zIndex: 30, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center', padding: 24 },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center', padding: 24 },
-  modalBox: { backgroundColor: '#fff', borderRadius: 16, width: '100%', overflow: 'hidden', paddingBottom: 8 },
+  modalBox: { backgroundColor: '#fff', borderRadius: 8, width: '100%', maxWidth: 600, overflow: 'hidden', paddingBottom: 8 },
   modalTitle: { fontSize: 17, fontWeight: '700', color: '#111827', padding: 16, borderBottomWidth: 1, borderBottomColor: '#e5e7eb' },
   modalEmpty: { fontSize: 14, color: '#9ca3af', padding: 16 },
   modalOption: { paddingHorizontal: 16, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#f3f4f6' },
