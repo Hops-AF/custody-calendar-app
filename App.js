@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import {
-  View, Text, TextInput, TouchableOpacity, ScrollView, Switch,
+  View, Text, TextInput, TouchableOpacity, ScrollView, Switch, FlatList, Pressable,
   Modal, Alert, StyleSheet, StatusBar, Platform,
   KeyboardAvoidingView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import * as FileSystem from 'expo-file-system';
@@ -47,6 +48,26 @@ function daysInclusive(start, end) {
   const s = toDate(start), e = toDate(end);
   if (!s || !e || e < s) return null;
   return Math.floor((e - s) / 86400000) + 1;
+}
+
+function timePickerValue(value) {
+  const date = new Date();
+  date.setSeconds(0, 0);
+  if (!value) return date;
+  const match = String(value).trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)?$/i);
+  if (!match) return date;
+  let hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  const meridiem = match[3]?.toUpperCase();
+  if (meridiem === 'PM' && hours < 12) hours += 12;
+  if (meridiem === 'AM' && hours === 12) hours = 0;
+  if (hours > 23 || minutes > 59) return date;
+  date.setHours(hours, minutes, 0, 0);
+  return date;
+}
+
+function formatTime(date) {
+  return date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
 }
 
 // Local-time-safe date helpers (avoid UTC shift from toISOString)
@@ -222,6 +243,81 @@ function generate223(parent1, parent2, startDateStr, endDateStr, childrenList) {
     cycle.setDate(cycle.getDate() + 14);
   }
   return entries;
+}
+
+const APP_TABS = [
+  { id: 'calendar', label: 'Calendar', icon: 'calendar-outline', activeIcon: 'calendar' },
+  { id: 'kid', label: 'Kid View', icon: 'happy-outline', activeIcon: 'happy' },
+  { id: 'entries', label: 'Entries', icon: 'list-outline', activeIcon: 'list' },
+  { id: 'reports', label: 'Reports', icon: 'pie-chart-outline', activeIcon: 'pie-chart' },
+  { id: 'settings', label: 'Settings', icon: 'settings-outline', activeIcon: 'settings' },
+];
+
+function BottomTabBar({ value, onChange }) {
+  return (
+    <View style={styles.bottomBar} accessibilityRole="tablist">
+      {APP_TABS.map((tab) => {
+        const active = value === tab.id;
+        return (
+          <TouchableOpacity
+            key={tab.id}
+            style={styles.bottomTab}
+            onPress={() => onChange(tab.id)}
+            accessibilityRole="tab"
+            accessibilityLabel={tab.label}
+            accessibilityState={{ selected: active }}
+          >
+            <Ionicons name={active ? tab.activeIcon : tab.icon} size={22} color={active ? '#2563eb' : '#6b7280'} />
+            <Text style={[styles.bottomTabLabel, active && styles.bottomTabLabelActive]}>{tab.label}</Text>
+          </TouchableOpacity>
+        );
+      })}
+    </View>
+  );
+}
+
+function NativePickerSheet({ picker, title, onChange, onCancel, onConfirm }) {
+  if (!picker) return null;
+
+  if (Platform.OS !== 'ios') {
+    return (
+      <DateTimePicker
+        value={picker.draft}
+        mode={picker.mode}
+        display="default"
+        onChange={(event, selected) => {
+          if (event.type === 'dismissed' || !selected) onCancel();
+          else onConfirm(selected);
+        }}
+      />
+    );
+  }
+
+  return (
+    <Modal visible transparent animationType="slide" presentationStyle="overFullScreen" onRequestClose={onCancel}>
+      <View style={styles.pickerOverlay}>
+        <Pressable style={StyleSheet.absoluteFill} onPress={onCancel} accessibilityLabel="Cancel picker" />
+        <SafeAreaView style={styles.pickerSheet} edges={['bottom']}>
+          <View style={styles.pickerToolbar}>
+            <TouchableOpacity onPress={onCancel} accessibilityRole="button">
+              <Text style={styles.pickerCancel}>Cancel</Text>
+            </TouchableOpacity>
+            <Text style={styles.pickerTitle}>{title}</Text>
+            <TouchableOpacity onPress={() => onConfirm(picker.draft)} accessibilityRole="button">
+              <Text style={styles.pickerDone}>Done</Text>
+            </TouchableOpacity>
+          </View>
+          <DateTimePicker
+            value={picker.draft}
+            mode={picker.mode}
+            display="spinner"
+            onChange={(_event, selected) => selected && onChange(selected)}
+            style={styles.pickerControl}
+          />
+        </SafeAreaView>
+      </View>
+    </Modal>
+  );
 }
 
 // ── CalendarView ──────────────────────────────────────────────────────────────
@@ -624,7 +720,7 @@ function SetupWizard({ initialData, onComplete, onCancel }) {
   const [sEOWDay, setSEOWDay] = useState('fri');
   const [sMidweek, setSMidweek] = useState(3);
   const [sChildren, setSChildren] = useState([]);
-  const [datePicker, setDatePicker] = useState(null); // { field }
+  const [datePicker, setDatePicker] = useState(null); // { field, mode, draft }
 
   useEffect(() => {
     setSChildren((selected) => selected.length ? selected.filter((child) => dChildren.includes(child)) : dChildren);
@@ -726,8 +822,12 @@ function SetupWizard({ initialData, onComplete, onCancel }) {
     });
   };
 
-  const onDate = (_e, d) => {
-    if (!d) { setDatePicker(null); return; }
+  const openWizardDatePicker = (field) => {
+    const current = field === 'start' ? sStart : sEnd;
+    setDatePicker({ field, mode: 'date', draft: toDate(current) || new Date() });
+  };
+
+  const confirmWizardDate = (d) => {
     const ds = formatDateStr(d);
     if (datePicker.field === 'start') setSStart(ds); else setSEnd(ds);
     setDatePicker(null);
@@ -745,8 +845,7 @@ function SetupWizard({ initialData, onComplete, onCancel }) {
   );
 
   return (
-    <Modal visible transparent animationType="slide" onRequestClose={onCancel}>
-      <View style={styles.modalOverlay}>
+      <View style={styles.wizardOverlay}>
         <View style={[styles.modalBox, { maxHeight: '92%' }]}>
           <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ padding: 16 }}>
             {/* progress */}
@@ -818,11 +917,11 @@ function SetupWizard({ initialData, onComplete, onCancel }) {
 
                   <Text style={[styles.fieldLabel, { marginTop: 10 }]}>Date Range</Text>
                   <View style={styles.dateRow}>
-                    <TouchableOpacity style={[styles.dateBtn, { flex: 1 }]} onPress={() => setDatePicker({ field: 'start' })}>
+                    <TouchableOpacity style={[styles.dateBtn, { flex: 1 }]} onPress={() => openWizardDatePicker('start')}>
                       <Text style={styles.dateBtnText}>{displayDate(sStart)}</Text>
                     </TouchableOpacity>
                     <Text style={styles.dateSep}>→</Text>
-                    <TouchableOpacity style={[styles.dateBtn, { flex: 1 }]} onPress={() => setDatePicker({ field: 'end' })}>
+                    <TouchableOpacity style={[styles.dateBtn, { flex: 1 }]} onPress={() => openWizardDatePicker('end')}>
                       <Text style={styles.dateBtnText}>{displayDate(sEnd)}</Text>
                     </TouchableOpacity>
                   </View>
@@ -918,17 +1017,226 @@ function SetupWizard({ initialData, onComplete, onCancel }) {
               )}
             </View>
           </ScrollView>
-          {datePicker && (
-            <DateTimePicker
-              value={toDate(datePicker.field === 'start' ? sStart : sEnd) || new Date()}
-              mode="date"
-              display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-              onChange={onDate}
-            />
-          )}
+          <NativePickerSheet
+            picker={datePicker}
+            title={datePicker?.field === 'start' ? 'Start date' : 'End date'}
+            onChange={(draft) => setDatePicker((current) => ({ ...current, draft }))}
+            onCancel={() => setDatePicker(null)}
+            onConfirm={confirmWizardDate}
+          />
         </View>
       </View>
-    </Modal>
+  );
+}
+
+function EntriesScreen({ entries, parents, parentColors, children, parentLocations, totalDays, onAdd, onSelect }) {
+  const renderEntry = ({ item }) => {
+    const days = daysInclusive(item.beginDate, item.endDate);
+    const includedChildren = children.filter((child) => item.childrenPresent?.[child]);
+    const location = resolveLocation(item, parentLocations);
+    const incomplete = !item.parent || !item.beginDate || !item.endDate || includedChildren.length === 0;
+    return (
+      <TouchableOpacity
+        style={[styles.entrySummary, item.isException && styles.entrySummaryHoliday]}
+        onPress={() => onSelect(item.id)}
+        activeOpacity={0.72}
+        accessibilityRole="button"
+        accessibilityLabel={`Edit ${item.parent || 'unassigned'} custody entry, ${item.beginDate && item.endDate ? `${displayDate(item.beginDate)} to ${displayDate(item.endDate)}` : 'dates not set'}`}
+      >
+        <View style={[styles.entrySummaryStripe, { backgroundColor: item.parent ? colorForName(item.parent, parents, parentColors) : '#9ca3af' }]} />
+        <View style={styles.entrySummaryBody}>
+          <View style={styles.entrySummaryTop}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.entrySummaryTitle} numberOfLines={1}>
+                {item.beginDate && item.endDate ? `${displayDate(item.beginDate)} - ${displayDate(item.endDate)}` : 'New custody entry'}
+              </Text>
+              <Text style={[styles.entrySummaryParent, incomplete && styles.entrySummaryWarning]} numberOfLines={1}>
+                {incomplete ? 'Needs details' : item.parent}
+              </Text>
+            </View>
+            {item.isException && <View style={styles.holidayBadge}><Text style={styles.holidayBadgeText}>Holiday</Text></View>}
+            <Ionicons name="chevron-forward" size={20} color="#9ca3af" />
+          </View>
+          <Text style={styles.entrySummaryMeta} numberOfLines={1}>
+            {days === null ? 'Dates not set' : `${days} custody ${days === 1 ? 'day' : 'days'}`}
+            {includedChildren.length ? `  |  ${includedChildren.join(', ')}` : '  |  No children selected'}
+          </Text>
+          {(location || item.exchangeTime || item.exchangePlace) ? (
+            <Text style={styles.entrySummaryDetail} numberOfLines={1}>
+              {[location, item.exchangeTime, item.exchangePlace].filter(Boolean).join('  |  ')}
+            </Text>
+          ) : null}
+        </View>
+      </TouchableOpacity>
+    );
+  };
+
+  return (
+    <FlatList
+      data={entries}
+      renderItem={renderEntry}
+      keyExtractor={(item) => item.id}
+      style={styles.screenList}
+      contentContainerStyle={styles.listContent}
+      keyboardShouldPersistTaps="handled"
+      initialNumToRender={10}
+      windowSize={7}
+      ListHeaderComponent={(
+        <View style={styles.screenIntroRow}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.screenTitle}>Custody entries</Text>
+            <Text style={styles.screenSub}>Open an entry to review or change its details.</Text>
+          </View>
+          <TouchableOpacity style={styles.iconPrimaryButton} onPress={onAdd} accessibilityRole="button" accessibilityLabel="Add custody entry">
+            <Ionicons name="add" size={24} color="#fff" />
+          </TouchableOpacity>
+        </View>
+      )}
+      ListEmptyComponent={(
+        <View style={styles.emptyState}>
+          <Ionicons name="calendar-clear-outline" size={34} color="#9ca3af" />
+          <Text style={styles.emptyStateTitle}>No custody entries</Text>
+          <Text style={styles.emptyStateText}>Add an entry here or select a date range on the calendar.</Text>
+          <TouchableOpacity style={styles.btnPrimary} onPress={onAdd}>
+            <Text style={styles.btnText}>Add entry</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+      ListFooterComponent={entries.length ? (
+        <View style={styles.listFooter}>
+          <Text style={styles.listFooterText}>Entered custody days</Text>
+          <Text style={styles.listFooterValue}>{totalDays}</Text>
+        </View>
+      ) : null}
+    />
+  );
+}
+
+function EntryEditor({ entry, parents, children, parentLocations, onClose, onDelete, onUpdate, onOpenParent, onOpenDate, onOpenTime }) {
+  if (!entry) return null;
+  const days = daysInclusive(entry.beginDate, entry.endDate);
+
+  const confirmDelete = () => {
+    Alert.alert('Delete entry', 'Delete this custody entry? This cannot be undone.', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Delete', style: 'destructive', onPress: () => onDelete(entry.id) },
+    ]);
+  };
+
+  return (
+      <View style={styles.editorSafeArea}>
+        <View style={styles.editorHeader}>
+          <View style={styles.editorHeaderSide} />
+          <Text style={styles.editorHeaderTitle}>Custody entry</Text>
+          <TouchableOpacity style={styles.editorHeaderSide} onPress={onClose} accessibilityRole="button">
+            <Text style={styles.editorDone}>Done</Text>
+          </TouchableOpacity>
+        </View>
+        <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <ScrollView contentContainerStyle={styles.editorContent} keyboardShouldPersistTaps="handled">
+            {entry.scheduleId ? (
+              <View style={styles.managedNotice}>
+                <Ionicons name="repeat" size={17} color="#1d4ed8" />
+                <Text style={styles.managedNoticeText}>Part of a generated schedule. Rebuilding that schedule may replace edits.</Text>
+              </View>
+            ) : null}
+
+            <View style={styles.editorSection}>
+              <View style={styles.switchRow}>
+                <View style={{ flex: 1, paddingRight: 12 }}>
+                  <Text style={styles.editorFieldTitle}>Holiday or exception</Text>
+                  <Text style={styles.editorFieldHelp}>Overrides a recurring schedule on these dates.</Text>
+                </View>
+                <Switch
+                  value={Boolean(entry.isException)}
+                  onValueChange={(value) => onUpdate(entry.id, 'isException', value)}
+                  trackColor={{ false: '#d1d5db', true: '#93c5fd' }}
+                  thumbColor={entry.isException ? '#2563eb' : '#f3f4f6'}
+                />
+              </View>
+            </View>
+
+            <View style={styles.editorSection}>
+              <Text style={styles.fieldLabel}>Parent</Text>
+              <TouchableOpacity style={styles.selectBtn} onPress={() => onOpenParent(entry.id)} accessibilityRole="button">
+                <Text style={entry.parent ? styles.selectBtnText : styles.selectBtnPlaceholder}>{entry.parent || 'Select parent'}</Text>
+                <Ionicons name="chevron-forward" size={18} color="#9ca3af" />
+              </TouchableOpacity>
+
+              <Text style={styles.fieldLabel}>Date range</Text>
+              <View style={styles.dateRow}>
+                <TouchableOpacity style={[styles.dateBtn, { flex: 1 }]} onPress={() => onOpenDate(entry.id, 'beginDate', entry.beginDate)} accessibilityRole="button">
+                  <Text style={entry.beginDate ? styles.dateBtnText : styles.dateBtnPlaceholder}>{entry.beginDate ? displayDate(entry.beginDate) : 'Start date'}</Text>
+                </TouchableOpacity>
+                <Ionicons name="arrow-forward" size={16} color="#6b7280" style={{ alignSelf: 'center' }} />
+                <TouchableOpacity style={[styles.dateBtn, { flex: 1 }]} onPress={() => onOpenDate(entry.id, 'endDate', entry.endDate)} accessibilityRole="button">
+                  <Text style={entry.endDate ? styles.dateBtnText : styles.dateBtnPlaceholder}>{entry.endDate ? displayDate(entry.endDate) : 'End date'}</Text>
+                </TouchableOpacity>
+              </View>
+              {days !== null ? <Text style={styles.editorDuration}>{days} custody {days === 1 ? 'day' : 'days'}</Text> : null}
+            </View>
+
+            {children.length ? (
+              <View style={styles.editorSection}>
+                <Text style={styles.fieldLabel}>Children</Text>
+                {children.map((child) => (
+                  <View key={child} style={styles.editorToggleRow}>
+                    <Text style={styles.switchLabel}>{child}</Text>
+                    <Switch
+                      value={Boolean(entry.childrenPresent?.[child])}
+                      onValueChange={(value) => onUpdate(entry.id, 'childrenPresent', { ...entry.childrenPresent, [child]: value })}
+                      trackColor={{ false: '#d1d5db', true: '#93c5fd' }}
+                      thumbColor={entry.childrenPresent?.[child] ? '#2563eb' : '#f3f4f6'}
+                    />
+                  </View>
+                ))}
+              </View>
+            ) : null}
+
+            <View style={styles.editorSection}>
+              <Text style={styles.fieldLabel}>Where</Text>
+              <TextInput
+                style={styles.input}
+                value={entry.location || ''}
+                onChangeText={(value) => onUpdate(entry.id, 'location', value)}
+                placeholder={entry.parent && parentLocations[entry.parent] ? parentLocations[entry.parent] : "Location (defaults to parent's home)"}
+                autoCapitalize="words"
+              />
+
+              <Text style={[styles.fieldLabel, { marginTop: 16 }]}>Exchange</Text>
+              <TouchableOpacity style={styles.selectBtn} onPress={() => onOpenTime(entry.id, entry.exchangeTime)} accessibilityRole="button">
+                <View style={styles.pickerRowLabel}>
+                  <Ionicons name="time-outline" size={19} color="#6b7280" />
+                  <Text style={entry.exchangeTime ? styles.selectBtnText : styles.selectBtnPlaceholder}>{entry.exchangeTime || 'Exchange time'}</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={18} color="#9ca3af" />
+              </TouchableOpacity>
+              <TextInput
+                style={styles.input}
+                value={entry.exchangePlace || ''}
+                onChangeText={(value) => onUpdate(entry.id, 'exchangePlace', value)}
+                placeholder="Exchange place (for example, school)"
+                autoCapitalize="words"
+              />
+
+              <Text style={[styles.fieldLabel, { marginTop: 16 }]}>Note</Text>
+              <TextInput
+                style={[styles.input, styles.notesInput]}
+                value={entry.note || ''}
+                onChangeText={(value) => onUpdate(entry.id, 'note', value)}
+                placeholder="Optional note"
+                multiline
+                textAlignVertical="top"
+              />
+            </View>
+
+            <TouchableOpacity style={styles.deleteEntryButton} onPress={confirmDelete} accessibilityRole="button">
+              <Ionicons name="trash-outline" size={19} color="#dc2626" />
+              <Text style={styles.deleteEntryText}>Delete entry</Text>
+            </TouchableOpacity>
+          </ScrollView>
+        </KeyboardAvoidingView>
+      </View>
   );
 }
 
@@ -948,8 +1256,6 @@ export default function App() {
   const [scheduleAssignments, setScheduleAssignments] = useState([]);
   const [newParentName, setNewParentName] = useState('');
   const [newChildName, setNewChildName] = useState('');
-  const [showConfig, setShowConfig] = useState(true);
-  const [showReporting, setShowReporting] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
   // Reporting
@@ -962,9 +1268,10 @@ export default function App() {
   const [analysisChild, setAnalysisChild] = useState('all');
 
   // UI state
-  const [viewMode, setViewMode] = useState('calendar'); // 'list' | 'calendar'
+  const [viewMode, setViewMode] = useState('calendar');
   const [showWizard, setShowWizard] = useState(false);
-  const [datePicker, setDatePicker] = useState(null); // { context, field, current }
+  const [editingEntryId, setEditingEntryId] = useState(null);
+  const [datePicker, setDatePicker] = useState(null); // { context, field, mode, draft }
   const [parentPickerEntryId, setParentPickerEntryId] = useState(null);
 
   // Schedule generator state
@@ -1003,7 +1310,7 @@ export default function App() {
         if (data.quarter) setQuarter(data.quarter);
         if (data.preset) setPreset(data.preset);
         if (data.analysisChild) setAnalysisChild(data.analysisChild);
-        if (data.viewMode) setViewMode(data.viewMode);
+        if (data.viewMode) setViewMode(data.viewMode === 'list' ? 'entries' : data.viewMode);
       }
       // Auto-open the setup wizard on a fresh install (no parents saved yet).
       if (!data || !data.parents || data.parents.length === 0) setShowWizard(true);
@@ -1095,7 +1402,10 @@ export default function App() {
   const addRow = () => {
     const cp = {};
     children.forEach((c) => { cp[c] = true; });
-    setEntries([...entries, { id: generateId(), parent: '', beginDate: '', endDate: '', childrenPresent: cp, note: '' }]);
+    const entry = { id: generateId(), parent: '', beginDate: '', endDate: '', childrenPresent: cp, note: '' };
+    setEntries([...entries, entry]);
+    setEditingEntryId(entry.id);
+    setViewMode('entries');
   };
 
   const createEntryFromCalendar = (start, end, parent, childFilter, isException, name) => {
@@ -1113,8 +1423,8 @@ export default function App() {
   };
 
   const removeRow = (id) => {
-    if (entries.length <= 1) return;
     setEntries(entries.filter((e) => e.id !== id));
+    if (editingEntryId === id) setEditingEntryId(null);
   };
 
   const updateEntry = (id, field, value) => {
@@ -1390,22 +1700,25 @@ export default function App() {
   // ── date picker ──────────────────────────────────────────────────────────────
 
   const openDatePicker = (context, field, currentStr) => {
-    const current = currentStr ? toDate(currentStr) : new Date();
-    setDatePicker({ context, field, current: current || new Date() });
+    const draft = currentStr ? toDate(currentStr) : new Date();
+    setDatePicker({ context, field, mode: 'date', draft: draft || new Date() });
   };
 
-  const onDateChange = (_event, selectedDate) => {
-    if (!selectedDate) { setDatePicker(null); return; }
+  const openTimePicker = (entryId, currentValue) => {
+    setDatePicker({ context: entryId, field: 'exchangeTime', mode: 'time', draft: timePickerValue(currentValue) });
+  };
+
+  const confirmPicker = (selectedDate) => {
     const { context, field } = datePicker;
-    const dateStr = formatDateStr(selectedDate);
+    const value = datePicker.mode === 'time' ? formatTime(selectedDate) : formatDateStr(selectedDate);
     if (context === 'reporting') {
-      if (field === 'customStart') setCustomStart(dateStr);
-      else setCustomEnd(dateStr);
+      if (field === 'customStart') setCustomStart(value);
+      else setCustomEnd(value);
     } else if (context === 'sched') {
-      if (field === 'scheduleStart') setScheduleStart(dateStr);
-      else setScheduleEnd(dateStr);
+      if (field === 'scheduleStart') setScheduleStart(value);
+      else setScheduleEnd(value);
     } else {
-      updateEntry(context, field, dateStr);
+      updateEntry(context, field, value);
     }
     setDatePicker(null);
   };
@@ -1422,8 +1735,10 @@ export default function App() {
     );
   }
 
+  const editingEntry = entries.find((entry) => entry.id === editingEntryId) || null;
+
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right', 'bottom']}>
       <StatusBar barStyle="dark-content" backgroundColor="#f9fafb" />
       {showWizard && (
         <SetupWizard
@@ -1432,31 +1747,31 @@ export default function App() {
           onCancel={() => setShowWizard(false)}
         />
       )}
+      <View
+        style={{ flex: 1 }}
+        accessibilityElementsHidden={Boolean(editingEntry || showWizard || showScheduleGen)}
+        importantForAccessibility={(editingEntry || showWizard || showScheduleGen) ? 'no-hide-descendants' : 'auto'}
+      >
+      <View style={styles.appHeader}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.headerTitle}>Custody Calendar</Text>
+          {children.length > 0 && <Text style={styles.headerSub} numberOfLines={1}>{children.join(' & ')}</Text>}
+        </View>
+      </View>
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        {viewMode === 'entries' ? (
+          <EntriesScreen
+            entries={entries}
+            parents={parents}
+            parentColors={parentColors}
+            children={children}
+            parentLocations={parentLocations}
+            totalDays={footerTotals.totalDays}
+            onAdd={addRow}
+            onSelect={setEditingEntryId}
+          />
+        ) : (
         <ScrollView style={styles.scroll} contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
-
-          {/* Header */}
-          <View style={styles.headerBox}>
-            <Text style={styles.headerTitle}>Custody Calendar</Text>
-            {children.length > 0 && (
-              <Text style={styles.headerSub}>{children.join(' & ')}</Text>
-            )}
-          </View>
-
-          {/* View toggle */}
-          <View style={styles.segment}>
-            {[{ id: 'list', label: 'Entries' }, { id: 'calendar', label: 'Calendar' }, { id: 'kid', label: 'Kid View' }].map((m) => (
-              <TouchableOpacity
-                key={m.id}
-                style={[styles.segmentBtn, viewMode === m.id && styles.segmentBtnActive]}
-                onPress={() => setViewMode(m.id)}
-                accessibilityRole="tab"
-                accessibilityState={{ selected: viewMode === m.id }}
-              >
-                <Text style={[styles.segmentText, viewMode === m.id && styles.segmentTextActive]}>{m.label}</Text>
-              </TouchableOpacity>
-            ))}
-          </View>
 
           {viewMode === 'kid' ? (
             <KidView
@@ -1470,18 +1785,20 @@ export default function App() {
             />
           ) : viewMode === 'calendar' ? (
             <CalendarView entries={entries} parents={parents} parentColors={parentColors} children={children} childColors={childColors} onCreateEntry={createEntryFromCalendar} />
-          ) : (
+          ) : viewMode === 'settings' ? (
           <>
-          {/* Configuration */}
+          <View style={styles.screenIntro}>
+            <Text style={styles.screenTitle}>Settings</Text>
+            <Text style={styles.screenSub}>Household, schedules, sharing, and local data.</Text>
+          </View>
+
           <View style={styles.card}>
-            <TouchableOpacity style={styles.sectionHeader} onPress={() => setShowConfig(!showConfig)}>
-              <Text style={styles.sectionTitle}>Configuration</Text>
-              <Text style={styles.toggleBtn}>{showConfig ? 'Hide' : 'Show'}</Text>
-            </TouchableOpacity>
-            {!showConfig && (parents.length === 0 || children.length === 0) && (
-              <Text style={styles.warnText}>⚠ Add parents and children before entering dates.</Text>
-            )}
-            {showConfig && (
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>Household</Text>
+              <TouchableOpacity onPress={() => setShowWizard(true)} accessibilityRole="button">
+                <Text style={styles.toggleBtn}>Guided edit</Text>
+              </TouchableOpacity>
+            </View>
               <View>
                 {/* Parents */}
                 <Text style={styles.fieldLabel}>Parents</Text>
@@ -1576,47 +1893,61 @@ export default function App() {
                   </TouchableOpacity>
                 </View>
 
-                <View style={[styles.actionRow, { marginTop: 20 }]}>
-                  <TouchableOpacity style={styles.btnDanger} onPress={clearAll}>
-                    <Text style={styles.btnText}>Clear entries</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity style={styles.btnDanger} onPress={resetAll}>
-                    <Text style={styles.btnText}>Reset all data</Text>
-                  </TouchableOpacity>
-                </View>
               </View>
-            )}
           </View>
 
-          {/* Actions */}
-          <View style={styles.actionRow}>
-            <TouchableOpacity style={{ backgroundColor: '#6b7280', paddingHorizontal: 14, paddingVertical: 9, borderRadius: 8 }} onPress={() => setShowWizard(true)}>
-              <Text style={styles.btnText}>Edit household</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.btnPrimary} onPress={addRow}>
-              <Text style={styles.btnText}>+ Add Entry</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.btnPrimary} onPress={() => setShowScheduleGen(true)}>
-              <Text style={styles.btnText}>⚡ Generate</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.btnSuccess} onPress={exportICS}>
-              <Text style={styles.btnText}>📅 Share Calendar</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.btnSuccess} onPress={exportKidPage}>
-              <Text style={styles.btnText}>👧 Send to Kids</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.btnSuccess} onPress={exportCSV}>
-              <Text style={styles.btnText}>Export CSV</Text>
-            </TouchableOpacity>
-          </View>
-
-          {/* Reporting */}
           <View style={styles.card}>
-            <TouchableOpacity style={styles.sectionHeader} onPress={() => setShowReporting(!showReporting)}>
-              <Text style={styles.sectionTitle}>Reporting & Analysis</Text>
-              <Text style={styles.toggleBtn}>{showReporting ? 'Hide' : 'Show'}</Text>
+            <Text style={styles.sectionTitle}>Schedules</Text>
+            <Text style={styles.settingsHelp}>{scheduleAssignments.length ? `${scheduleAssignments.length} saved recurring ${scheduleAssignments.length === 1 ? 'schedule' : 'schedules'}.` : 'Create a recurring schedule or continue entering dates manually.'}</Text>
+            <TouchableOpacity style={styles.settingsAction} onPress={() => setShowScheduleGen(true)} accessibilityRole="button">
+              <View style={styles.settingsActionIcon}><Ionicons name="repeat" size={20} color="#2563eb" /></View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.settingsActionTitle}>Generate schedule</Text>
+                <Text style={styles.settingsActionSub}>Every other weekend, alternating weeks, or 2-2-3</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={19} color="#9ca3af" />
             </TouchableOpacity>
-            {showReporting && (
+          </View>
+
+          <View style={styles.card}>
+            <Text style={styles.sectionTitle}>Share and backup</Text>
+            {[
+              { label: 'Share calendar', sub: 'Export an Apple or Google calendar file', icon: 'calendar-outline', action: exportICS },
+              { label: 'Send Kid View', sub: 'Share a self-contained schedule page', icon: 'happy-outline', action: exportKidPage },
+              { label: 'Export CSV', sub: 'Back up entries and report totals', icon: 'download-outline', action: exportCSV },
+            ].map((item) => (
+              <TouchableOpacity key={item.label} style={styles.settingsAction} onPress={item.action} accessibilityRole="button">
+                <View style={styles.settingsActionIcon}><Ionicons name={item.icon} size={20} color="#2563eb" /></View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.settingsActionTitle}>{item.label}</Text>
+                  <Text style={styles.settingsActionSub}>{item.sub}</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={19} color="#9ca3af" />
+              </TouchableOpacity>
+            ))}
+          </View>
+
+          <View style={styles.card}>
+            <Text style={styles.sectionTitle}>Data</Text>
+            <Text style={styles.settingsHelp}>Your custody data is saved locally on this device.</Text>
+            <TouchableOpacity style={styles.destructiveRow} onPress={clearAll} accessibilityRole="button">
+              <Ionicons name="trash-outline" size={19} color="#dc2626" />
+              <Text style={styles.destructiveRowText}>Clear custody entries</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.destructiveRow} onPress={resetAll} accessibilityRole="button">
+              <Ionicons name="refresh-outline" size={19} color="#dc2626" />
+              <Text style={styles.destructiveRowText}>Reset all app data</Text>
+            </TouchableOpacity>
+          </View>
+          </>
+          ) : viewMode === 'reports' ? (
+          <>
+          <View style={styles.screenIntro}>
+            <Text style={styles.screenTitle}>Reports</Text>
+            <Text style={styles.screenSub}>Compare custody time by child and reporting period.</Text>
+          </View>
+
+          <View style={styles.card}>
               <View>
                 {/* Mode tabs */}
                 <View style={styles.tabRow}>
@@ -1740,149 +2071,37 @@ export default function App() {
                   </View>
                 )}
               </View>
-            )}
           </View>
 
-          {/* Entries */}
-          {entries.map((entry) => {
-            const days = daysInclusive(entry.beginDate, entry.endDate);
-            return (
-              <View key={entry.id} style={[styles.entryCard, entry.isException && styles.entryCardHoliday]}>
-                <View style={styles.entryCardHeader}>
-                  <Text style={styles.entryCardTitle}>
-                    {entry.isException ? '🎁 ' : ''}
-                    {entry.beginDate && entry.endDate
-                      ? `${displayDate(entry.beginDate)} – ${displayDate(entry.endDate)}`
-                      : 'New Entry'}
-                  </Text>
-                  <TouchableOpacity onPress={() => removeRow(entry.id)} disabled={entries.length === 1} accessibilityRole="button" accessibilityLabel={`Delete entry ${displayDate(entry.beginDate)} to ${displayDate(entry.endDate)}`}>
-                    <Text style={[styles.deleteBtn, entries.length === 1 && styles.deleteBtnDisabled]}>🗑️</Text>
-                  </TouchableOpacity>
-                </View>
-
-                {/* Holiday / exception */}
-                <View style={styles.switchRow}>
-                  <Text style={styles.switchLabel}>🎁 Holiday / exception (overrides schedule)</Text>
-                  <Switch
-                    value={Boolean(entry.isException)}
-                    onValueChange={(val) => updateEntry(entry.id, 'isException', val)}
-                    trackColor={{ false: '#d1d5db', true: '#93c5fd' }}
-                    thumbColor={entry.isException ? '#2563eb' : '#f3f4f6'}
-                  />
-                </View>
-
-                {/* Parent */}
-                <Text style={styles.fieldLabel}>Parent</Text>
-                <TouchableOpacity style={styles.selectBtn} onPress={() => setParentPickerEntryId(entry.id)}>
-                  <Text style={entry.parent ? styles.selectBtnText : styles.selectBtnPlaceholder}>
-                    {entry.parent || 'Select parent…'}
-                  </Text>
-                  <Text style={styles.selectArrow}>›</Text>
-                </TouchableOpacity>
-
-                {/* Date Range */}
-                <Text style={styles.fieldLabel}>Date Range</Text>
-                <View style={styles.dateRow}>
-                  <TouchableOpacity style={[styles.dateBtn, { flex: 1 }]} onPress={() => openDatePicker(entry.id, 'beginDate', entry.beginDate)}>
-                    <Text style={entry.beginDate ? styles.dateBtnText : styles.dateBtnPlaceholder}>
-                      {entry.beginDate ? displayDate(entry.beginDate) : 'Start date'}
-                    </Text>
-                  </TouchableOpacity>
-                  <Text style={styles.dateSep}>→</Text>
-                  <TouchableOpacity style={[styles.dateBtn, { flex: 1 }]} onPress={() => openDatePicker(entry.id, 'endDate', entry.endDate)}>
-                    <Text style={entry.endDate ? styles.dateBtnText : styles.dateBtnPlaceholder}>
-                      {entry.endDate ? displayDate(entry.endDate) : 'End date'}
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-
-                {/* Duration */}
-                {days !== null && (
-                  <View style={styles.durationBadge}>
-                    <Text style={styles.durationText}>{days} custody day(s)</Text>
-                  </View>
-                )}
-
-                {/* Children present */}
-                {children.length > 0 && (
-                  <View style={{ marginTop: 10 }}>
-                    <Text style={styles.fieldLabel}>Children Present</Text>
-                    {children.map((child) => (
-                      <View key={child} style={styles.switchRow}>
-                        <Text style={styles.switchLabel}>{child}</Text>
-                        <Switch
-                          value={entry.childrenPresent[child] || false}
-                          onValueChange={(val) => {
-                            const cp = { ...entry.childrenPresent, [child]: val };
-                            updateEntry(entry.id, 'childrenPresent', cp);
-                          }}
-                          trackColor={{ false: '#d1d5db', true: '#93c5fd' }}
-                          thumbColor={entry.childrenPresent[child] ? '#2563eb' : '#f3f4f6'}
-                        />
-                      </View>
-                    ))}
-                  </View>
-                )}
-
-                {/* Where the child stays */}
-                <Text style={[styles.fieldLabel, { marginTop: 10 }]}>Where</Text>
-                <TextInput
-                  style={styles.input}
-                  value={entry.location || ''}
-                  onChangeText={(v) => updateEntry(entry.id, 'location', v)}
-                  placeholder={entry.parent && parentLocations[entry.parent] ? parentLocations[entry.parent] : 'Location (defaults to parent’s home)'}
-                  autoCapitalize="words"
-                />
-
-                {/* Exchange / handoff */}
-                <Text style={[styles.fieldLabel, { marginTop: 10 }]}>Exchange</Text>
-                <View style={styles.dateRow}>
-                  <TextInput
-                    style={[styles.input, { flex: 1 }]}
-                    value={entry.exchangeTime || ''}
-                    onChangeText={(v) => updateEntry(entry.id, 'exchangeTime', v)}
-                    placeholder="Time (e.g. 6:00 PM)"
-                  />
-                  <TextInput
-                    style={[styles.input, { flex: 1 }]}
-                    value={entry.exchangePlace || ''}
-                    onChangeText={(v) => updateEntry(entry.id, 'exchangePlace', v)}
-                    placeholder="Place (e.g. School)"
-                    autoCapitalize="words"
-                  />
-                </View>
-
-                {/* Note */}
-                <Text style={[styles.fieldLabel, { marginTop: 10 }]}>Note</Text>
-                <TextInput
-                  style={styles.input}
-                  value={entry.note}
-                  onChangeText={(v) => updateEntry(entry.id, 'note', v)}
-                  placeholder="Optional note"
-                />
-              </View>
-            );
-          })}
-
-          {/* Footer */}
-          <View style={styles.footer}>
-            <Text style={styles.footerText}>Entered custody days: {footerTotals.totalDays}</Text>
-          </View>
           </>
-          )}
+          ) : null}
 
         </ScrollView>
+        )}
       </KeyboardAvoidingView>
+      <BottomTabBar value={viewMode} onChange={setViewMode} />
+      </View>
 
-      {/* Native Date Picker */}
-      {datePicker && (
-        <DateTimePicker
-          value={datePicker.current}
-          mode="date"
-          display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-          onChange={onDateChange}
-        />
-      )}
+      <EntryEditor
+        entry={editingEntry}
+        parents={parents}
+        children={children}
+        parentLocations={parentLocations}
+        onClose={() => setEditingEntryId(null)}
+        onDelete={removeRow}
+        onUpdate={updateEntry}
+        onOpenParent={setParentPickerEntryId}
+        onOpenDate={openDatePicker}
+        onOpenTime={openTimePicker}
+      />
+
+      <NativePickerSheet
+        picker={datePicker}
+        title={datePicker?.mode === 'time' ? 'Exchange time' : datePicker?.field?.toLowerCase().includes('start') || datePicker?.field === 'beginDate' ? 'Start date' : 'End date'}
+        onChange={(draft) => setDatePicker((current) => ({ ...current, draft }))}
+        onCancel={() => setDatePicker(null)}
+        onConfirm={confirmPicker}
+      />
 
       {/* Parent Picker Modal */}
       <Modal
@@ -1947,14 +2166,8 @@ export default function App() {
         </TouchableOpacity>
       </Modal>
 
-      {/* Schedule Generator Modal */}
-      <Modal
-        visible={showScheduleGen}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setShowScheduleGen(false)}
-      >
-        <View style={styles.modalOverlay}>
+      {showScheduleGen && (
+        <View style={styles.wizardOverlay}>
           <View style={[styles.modalBox, { maxHeight: '85%' }]}>
             <ScrollView keyboardShouldPersistTaps="handled">
               <Text style={styles.modalTitle}>Generate Schedule</Text>
@@ -2058,7 +2271,6 @@ export default function App() {
               </View>
             </ScrollView>
           </View>
-        </View>
 
         {/* Parent picker inside schedule modal */}
         <Modal
@@ -2090,7 +2302,8 @@ export default function App() {
             </View>
           </TouchableOpacity>
         </Modal>
-      </Modal>
+      </View>
+      )}
 
     </SafeAreaView>
   );
@@ -2105,13 +2318,45 @@ const styles = StyleSheet.create({
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   loadingText: { fontSize: 16, color: '#6b7280' },
 
-  headerBox: { marginBottom: 16 },
-  headerTitle: { fontSize: 24, fontWeight: '700', color: '#111827' },
-  headerSub: { fontSize: 15, color: '#6b7280', marginTop: 2 },
+  appHeader: {
+    minHeight: 58,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    justifyContent: 'center',
+    backgroundColor: '#f9fafb',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#e5e7eb',
+  },
+  headerTitle: { fontSize: 22, fontWeight: '700', color: '#111827' },
+  headerSub: { fontSize: 13, color: '#6b7280', marginTop: 1 },
+  bottomBar: {
+    minHeight: 62,
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    backgroundColor: '#fff',
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#d1d5db',
+    paddingTop: 6,
+  },
+  bottomTab: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 2, minWidth: 0 },
+  bottomTabLabel: { fontSize: 10, color: '#6b7280', fontWeight: '500' },
+  bottomTabLabelActive: { color: '#2563eb', fontWeight: '700' },
+  screenIntro: { marginBottom: 14 },
+  screenIntroRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 18 },
+  screenTitle: { fontSize: 20, fontWeight: '700', color: '#111827' },
+  screenSub: { fontSize: 13, color: '#6b7280', marginTop: 3, lineHeight: 18 },
+  iconPrimaryButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#2563eb',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
 
   card: {
     backgroundColor: '#fff',
-    borderRadius: 12,
+    borderRadius: 8,
     padding: 16,
     marginBottom: 12,
     shadowColor: '#000',
@@ -2130,7 +2375,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#6b7280',
     textTransform: 'uppercase',
-    letterSpacing: 0.5,
+    letterSpacing: 0,
     marginBottom: 6,
   },
 
@@ -2184,6 +2429,88 @@ const styles = StyleSheet.create({
   btnDisabled: { opacity: 0.45 },
   btnText: { color: '#fff', fontWeight: '600', fontSize: 14 },
   inlineError: { color: '#b91c1c', fontSize: 12, marginTop: 8, lineHeight: 17 },
+
+  screenList: { flex: 1 },
+  listContent: { padding: 16, paddingBottom: 28, flexGrow: 1 },
+  entrySummary: {
+    minHeight: 94,
+    flexDirection: 'row',
+    backgroundColor: '#fff',
+    borderRadius: 8,
+    marginBottom: 10,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+  },
+  entrySummaryHoliday: { backgroundColor: '#fffbeb', borderColor: '#fde68a' },
+  entrySummaryStripe: { width: 5 },
+  entrySummaryBody: { flex: 1, paddingHorizontal: 13, paddingVertical: 12 },
+  entrySummaryTop: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  entrySummaryTitle: { fontSize: 15, fontWeight: '700', color: '#111827' },
+  entrySummaryParent: { fontSize: 13, color: '#4b5563', marginTop: 2 },
+  entrySummaryWarning: { color: '#b45309', fontWeight: '600' },
+  entrySummaryMeta: { fontSize: 12, color: '#6b7280', marginTop: 8 },
+  entrySummaryDetail: { fontSize: 12, color: '#6b7280', marginTop: 4 },
+  holidayBadge: { backgroundColor: '#fef3c7', borderRadius: 5, paddingHorizontal: 7, paddingVertical: 3 },
+  holidayBadgeText: { color: '#92400e', fontSize: 10, fontWeight: '700' },
+  emptyState: { flex: 1, minHeight: 320, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 40, gap: 10 },
+  emptyStateTitle: { fontSize: 17, fontWeight: '700', color: '#111827' },
+  emptyStateText: { fontSize: 13, lineHeight: 19, color: '#6b7280', textAlign: 'center', marginBottom: 4 },
+  listFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 14,
+    paddingVertical: 13,
+    borderRadius: 8,
+    backgroundColor: '#f3f4f6',
+    marginTop: 4,
+  },
+  listFooterText: { fontSize: 13, color: '#4b5563', fontWeight: '600' },
+  listFooterValue: { fontSize: 16, color: '#111827', fontWeight: '700' },
+
+  editorSafeArea: { ...StyleSheet.absoluteFillObject, zIndex: 20, backgroundColor: '#f9fafb' },
+  editorHeader: {
+    minHeight: 52,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#d1d5db',
+    backgroundColor: '#fff',
+  },
+  editorHeaderSide: { minWidth: 52, minHeight: 44, alignItems: 'flex-end', justifyContent: 'center' },
+  editorHeaderTitle: { fontSize: 16, fontWeight: '700', color: '#111827' },
+  editorDone: { fontSize: 16, color: '#2563eb', fontWeight: '700' },
+  editorContent: { padding: 16, paddingBottom: 36 },
+  editorSection: { backgroundColor: '#fff', borderRadius: 8, padding: 15, marginBottom: 12, borderWidth: 1, borderColor: '#e5e7eb' },
+  editorFieldTitle: { fontSize: 15, color: '#111827', fontWeight: '600' },
+  editorFieldHelp: { fontSize: 12, color: '#6b7280', marginTop: 2 },
+  editorDuration: { fontSize: 12, color: '#1d4ed8', fontWeight: '600', marginTop: 3 },
+  editorToggleRow: { minHeight: 46, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: '#e5e7eb' },
+  managedNotice: { flexDirection: 'row', gap: 8, alignItems: 'flex-start', backgroundColor: '#eff6ff', borderRadius: 8, padding: 12, marginBottom: 12 },
+  managedNoticeText: { flex: 1, fontSize: 12, lineHeight: 17, color: '#1e40af' },
+  pickerRowLabel: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  notesInput: { minHeight: 88, paddingTop: 10 },
+  deleteEntryButton: { minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, borderRadius: 8, borderWidth: 1, borderColor: '#fecaca', backgroundColor: '#fff' },
+  deleteEntryText: { fontSize: 14, color: '#dc2626', fontWeight: '600' },
+
+  pickerOverlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.32)' },
+  pickerSheet: { backgroundColor: '#fff', borderTopLeftRadius: 16, borderTopRightRadius: 16, overflow: 'hidden' },
+  pickerToolbar: { minHeight: 50, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: '#d1d5db' },
+  pickerTitle: { fontSize: 15, fontWeight: '700', color: '#111827' },
+  pickerCancel: { fontSize: 16, color: '#6b7280' },
+  pickerDone: { fontSize: 16, color: '#2563eb', fontWeight: '700' },
+  pickerControl: { width: '100%', height: 210 },
+
+  settingsHelp: { fontSize: 13, color: '#6b7280', lineHeight: 18, marginTop: 5, marginBottom: 8 },
+  settingsAction: { minHeight: 58, flexDirection: 'row', alignItems: 'center', gap: 11, paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: '#e5e7eb' },
+  settingsActionIcon: { width: 34, height: 34, borderRadius: 8, backgroundColor: '#eff6ff', alignItems: 'center', justifyContent: 'center' },
+  settingsActionTitle: { fontSize: 14, fontWeight: '600', color: '#111827' },
+  settingsActionSub: { fontSize: 11, color: '#6b7280', marginTop: 2 },
+  destructiveRow: { minHeight: 48, flexDirection: 'row', alignItems: 'center', gap: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: '#fee2e2' },
+  destructiveRowText: { fontSize: 14, color: '#dc2626', fontWeight: '600' },
 
   tabRow: { flexDirection: 'row', gap: 6, marginBottom: 12 },
   tab: {
@@ -2368,6 +2695,7 @@ const styles = StyleSheet.create({
   },
   footerText: { fontSize: 15, fontWeight: '600', color: '#374151' },
 
+  wizardOverlay: { ...StyleSheet.absoluteFillObject, zIndex: 30, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center', padding: 24 },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center', padding: 24 },
   modalBox: { backgroundColor: '#fff', borderRadius: 16, width: '100%', overflow: 'hidden', paddingBottom: 8 },
   modalTitle: { fontSize: 17, fontWeight: '700', color: '#111827', padding: 16, borderBottomWidth: 1, borderBottomColor: '#e5e7eb' },

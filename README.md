@@ -8,6 +8,8 @@ A React Native / Expo app for tracking child custody schedules and generating cu
 - **Custody entries** — record date ranges, which children are present, and notes
 - **Guided household setup** — add parents, children, and per-child recurring schedules in a four-step intake flow
 - **Calendar view** — a color-coded month grid with per-child filters, split-color sibling schedules, cross-month range selection, and same-child conflict detection
+- **iOS-style navigation** — fixed tabs for Calendar, Kid View, Entries, Reports, and Settings
+- **Focused entry editing** — virtualized entry summaries open into a dedicated editor with native date and time pickers
 - **Schedule generator** — auto-create entries for common arrangements:
   - Every Other Weekend (~80/20)
   - Every Other Weekend + Midweek (~70/30)
