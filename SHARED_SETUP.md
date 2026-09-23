@@ -6,7 +6,7 @@ Implemented locally, not connected to a live Supabase project. No real family da
 
 1. Create a dedicated Supabase development project. Choose its region and billing plan deliberately; the app does not provision either. Start with invented families.
 2. Apply the files in `supabase/migrations` in filename order through the SQL editor or your migration workflow. Use a dedicated Auth project: account deletion removes that project's signed-in Auth user.
-3. Enable email authentication and confirmation. Configure the Magic Link email template to show `{{ .Token }}`. The app verifies emailed codes, not browser links. Configure production email delivery, suitable OTP expiry, rate limits, and abuse protection before launch. See [Supabase email OTP setup](https://supabase.com/docs/guides/auth/auth-email-passwordless).
+3. Enable email authentication and confirmation. Configure custom SMTP first: Supabase's built-in sender uses fixed link-only templates ("Follow the link below to sign in") that cannot be edited without custom SMTP, so app sign-in cannot work on it. Then edit **both** the **Magic link or OTP** template (existing accounts) and the **Confirm sign up** template (first sign-in creates the account) to show `{{ .Token }}`. The app verifies emailed codes, not browser links. Then add a migration or run once: `revoke execute on function public.rls_auto_enable() from public, anon, authenticated;` if the project was created with automatic RLS (clears two Security Advisor warnings). Configure production email delivery, suitable OTP expiry, rate limits, and abuse protection before launch. See [Supabase email OTP setup](https://supabase.com/docs/guides/auth/auth-email-passwordless).
 4. Set `EXPO_PUBLIC_SUPABASE_URL` and `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY` in `.env.local`, using `.env.example` as the field reference. Never embed a service-role key, secret key, database password, or personal access token.
 5. Restart Expo with `npx expo start --clear`. Rebuild native development clients for the added SecureStore/Crypto dependencies. Expo Go is not release validation.
 6. Run the live checks below before connecting real families. Row-level policies and transactional functions are required, not optional. See [Supabase row-level security](https://supabase.com/docs/guides/database/postgres/row-level-security).
@@ -57,7 +57,7 @@ September 10, 2026 checks: all 82 tests pass, and iOS/Android bundle exports suc
 
 Remaining live release gates:
 
-- [ ] Apply migrations to a dedicated Supabase development project; run its security advisor.
+- [x] Apply migrations to a dedicated Supabase development project; run its security advisor. Done September 23, 2026 on `custody-calendar-dev` (East US), applied as one transaction. Anonymous reads, writes, and RPC calls verified denied from outside. Advisor: 0 errors; remaining warnings are the intended signed-in RPCs (SECURITY DEFINER with internal membership checks) and the intended policy-less `custody_private.invitations`.
 - [ ] Test real OTP delivery/expiry/throttling, session restoration, sign-out, and recovery with two accounts on separate devices.
 - [ ] Invite, join, review/accept the starting plan, propose, counterpropose, decline, withdraw, and accept; verify synchronization on both devices.
 - [ ] Race approvals and access removal through independent clients. Serial PGlite tests do not prove concurrent network behavior.
