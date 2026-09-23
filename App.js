@@ -6,11 +6,15 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import { IconButton, PersonBadge, ChildSelector, DetailLine, SectionHeading, Field as TextInput, theme } from './family-ui';
+import { useHouseholdStore } from './use-household-store';
+import { useReminders } from './use-reminders';
+import { ReliabilityPanel, RecoveryScreen, SaveWarning, RestoreProgress } from './reliability-ui';
+import { SharedWorkspaceScreen } from './shared-ui';
+const { defaults } = require('./local-store');
 const { monthWeeks, textOnColor, dayDetails, dayShareText } = require('./calendar-ui');
 const {
   daysInclusive,
@@ -112,27 +116,6 @@ function colorForName(name, list, overrides) {
 function nextColor(overrides) {
   const used = Object.values(overrides || {});
   return COLOR_CHOICES.find((c) => !used.includes(c)) || COLOR_CHOICES[Object.keys(overrides || {}).length % COLOR_CHOICES.length];
-}
-
-// ── storage ───────────────────────────────────────────────────────────────────
-
-const STORAGE_KEY = '@custody_calendar_data';
-
-async function saveData(data) {
-  try {
-    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-  } catch (e) {
-    console.error('Save failed', e);
-  }
-}
-
-async function loadData() {
-  try {
-    const raw = await AsyncStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : null;
-  } catch (e) {
-    return null;
-  }
 }
 
 // ── schedule generators ───────────────────────────────────────────────────────
@@ -332,7 +315,7 @@ function NativePickerSheet({ picker, title, onChange, onCancel, onConfirm }) {
 
 // ── CalendarView ──────────────────────────────────────────────────────────────
 
-function CalendarView({ entries, parents, parentColors, parentLocations, children, childColors, onCreateEntry, onOpenEntry, today }) {
+function CalendarView({ entries, parents, parentColors, parentLocations, children, childColors, onCreateEntry, onOpenEntry, today, reminderTarget, readOnly = false, saveLabel = 'Save period', holidayNameEnabled = true }) {
   const [viewYear, setViewYear] = useState(() => toDate(today).getFullYear());
   const [viewMonth, setViewMonth] = useState(() => toDate(today).getMonth());
   const [selectedDate, setSelectedDate] = useState(today);
@@ -343,6 +326,12 @@ function CalendarView({ entries, parents, parentColors, parentLocations, childre
   const [pendingParent, setPendingParent] = useState(null);
   const [pendingHoliday, setPendingHoliday] = useState(false);
   const [pendingHolidayName, setPendingHolidayName] = useState('');
+  useEffect(() => {
+    const date = toDate(reminderTarget?.date);
+    if (!date) return;
+    setViewYear(date.getFullYear()); setViewMonth(date.getMonth()); setSelectedDate(reminderTarget.date);
+    setRangeMode(false); setPendingStart(null); setPendingRange(null); setChildFilter(null);
+  }, [reminderTarget]);
   const activeChild = children.includes(childFilter) ? childFilter : null;
   const colorFor = (name) => colorForName(name, parents, parentColors);
   const weeks = useMemo(() => monthWeeks(viewYear, viewMonth), [viewYear, viewMonth]);
@@ -379,8 +368,8 @@ function CalendarView({ entries, parents, parentColors, parentLocations, childre
   return (
     <View>
       <SectionHeading title="Family calendar" subtitle={rangeMode ? 'New date range' : 'Daily plans'}>
-        <IconButton icon={rangeMode ? 'close' : 'add'} label={rangeMode ? 'Cancel date range' : 'Add date range'}
-          active={rangeMode} onPress={() => { resetRange(); setRangeMode(!rangeMode); }} />
+        {!readOnly && <IconButton icon={rangeMode ? 'close' : 'add'} label={rangeMode ? 'Cancel date range' : 'Add date range'}
+          active={rangeMode} onPress={() => { resetRange(); setRangeMode(!rangeMode); }} />}
       </SectionHeading>
       <ChildSelector children={children} value={activeChild} includeAll colors={(c) => colorForName(c, children, childColors)}
         onChange={(c) => { setChildFilter(c); resetRange(); }} />
@@ -453,13 +442,13 @@ function CalendarView({ entries, parents, parentColors, parentLocations, childre
             <Ionicons name={parent === pendingParent ? 'radio-button-on' : 'radio-button-off'} size={21} color={theme.accent} />
           </Pressable>)}</View>
           <View style={styles.switchRow}><Text style={styles.switchLabel}>Holiday / exception</Text><Switch value={pendingHoliday} onValueChange={setPendingHoliday} trackColor={{ true: theme.accent }} /></View>
-          {pendingHoliday && <TextInput style={styles.input} value={pendingHolidayName} onChangeText={setPendingHolidayName} placeholder="Holiday name (optional)" />}
+          {pendingHoliday && holidayNameEnabled && <TextInput style={styles.input} value={pendingHolidayName} onChangeText={setPendingHolidayName} placeholder="Holiday name (optional)" />}
           <Pressable disabled={!parents.includes(pendingParent)} accessibilityRole="button" accessibilityState={{ disabled: !parents.includes(pendingParent) }}
             onPress={() => {
               onCreateEntry(pendingRange.start, pendingRange.end, pendingParent, activeChild, pendingHoliday, pendingHolidayName);
               setSelectedDate(pendingRange.start); resetRange(); setRangeMode(false);
             }} style={({ pressed }) => [styles.saveRangeButton, !parents.includes(pendingParent) && styles.btnDisabled, pressed && { opacity: 0.7 }]}>
-            <Ionicons name="checkmark" size={19} color="#fff" /><Text style={styles.btnText}>Save period</Text>
+            <Ionicons name="checkmark" size={19} color="#fff" /><Text style={styles.btnText}>{saveLabel}</Text>
           </Pressable>
         </>}
       </View> : <View style={styles.sectionBand}>
@@ -473,12 +462,12 @@ function CalendarView({ entries, parents, parentColors, parentLocations, childre
             <View style={{ flex: 1 }}><Text style={styles.detailChild}>{d.child || 'Family'}</Text>
               <Text style={styles.detailParent}>{d.type === 'conflict' ? 'Schedule needs review' : d.parent ? 'With ' + d.parent : 'Not scheduled'}</Text>
             </View>
-            {d.entry?.id && <IconButton icon="create-outline" label={'Edit entry for ' + (d.child || 'family')} onPress={() => onOpenEntry(d.entry.id)} />}
+            {!readOnly && d.entry?.id && <IconButton icon="create-outline" label={'Edit entry for ' + (d.child || 'family')} onPress={() => onOpenEntry(d.entry.id)} />}
           </View>
           <Text style={[styles.sourceLabel, d.type === 'conflict' && { color: '#974219' }]}>{d.source}</Text>
           {d.type === 'conflict' ? <>
             <Text style={styles.screenSub}>More than one parent is listed for this date.</Text>
-            {d.entries.map((entry) => <Pressable key={entry.id} accessibilityRole="button" onPress={() => onOpenEntry(entry.id)} style={styles.conflictEntry}>
+            {d.entries.map((entry) => <Pressable key={entry.id} disabled={readOnly} accessibilityRole={readOnly ? 'text' : 'button'} onPress={() => onOpenEntry(entry.id)} style={styles.conflictEntry}>
               <Text style={styles.parentChoiceText}>{entry.parent}</Text><Ionicons name="chevron-forward" size={18} color={theme.muted} />
             </Pressable>)}
           </> : <>
@@ -564,7 +553,7 @@ function KidView({ entries, parents, parentColors, parentLocations, parentPhones
 
 // ── SetupWizard ───────────────────────────────────────────────────────────────
 
-function SetupWizard({ initialData, onComplete, onCancel }) {
+function SetupWizard({ initialData, onComplete, onCancel, onJoinShared }) {
   const curYear = new Date().getFullYear();
   const [step, setStep] = useState(0);
   const [dParents, setDParents] = useState(initialData.parents || []);
@@ -723,6 +712,9 @@ function SetupWizard({ initialData, onComplete, onCancel }) {
             {step === 0 && (
               <View>
                 <Text style={styles.wizTitle}>Who are the parents?</Text>
+                {onJoinShared && <Pressable accessibilityRole="button" onPress={onJoinShared} style={[styles.toolRow, { minHeight: 48, marginBottom: 12 }]}>
+                  <Ionicons name="people-outline" size={20} color={theme.accent} /><Text style={{ color: theme.accent, fontWeight: '600' }}>Join a shared family</Text>
+                </Pressable>}
                 <Text style={styles.wizSub}>Add each parent. The first is the “primary” — the default custodian used for reporting. Tap ☆ to change who is primary.</Text>
                 {dParents.map((p, i) => (
                   <View key={p} style={styles.wizRow}>
@@ -986,12 +978,12 @@ function EntriesScreen({ entries, parents, parentColors, children, parentLocatio
   );
 }
 
-function EntryEditor({ entry, parents, children, parentLocations, onClose, onDelete, onUpdate, onOpenParent, onOpenDate, onOpenTime }) {
+function EntryEditor({ entry, parents, children, parentLocations, onClose, onDelete, onUpdate, onOpenParent, onOpenDate, onOpenTime, store }) {
   if (!entry) return null;
   const days = daysInclusive(entry.beginDate, entry.endDate);
 
   const confirmDelete = () => {
-    Alert.alert('Delete entry', 'Delete this custody entry? This cannot be undone.', [
+    Alert.alert('Delete entry', 'Delete this custody entry? You can undo it from local change history.', [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Delete', style: 'destructive', onPress: () => onDelete(entry.id) },
     ]);
@@ -1006,6 +998,7 @@ function EntryEditor({ entry, parents, children, parentLocations, onClose, onDel
             <Text style={styles.editorDone}>Done</Text>
           </TouchableOpacity>
         </View>
+        <SaveWarning store={store} />
         <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
           <ScrollView contentContainerStyle={styles.editorContent} keyboardShouldPersistTaps="handled">
             {entry.scheduleId ? (
@@ -1125,34 +1118,23 @@ function EntryEditor({ entry, parents, children, parentLocations, onClose, onDel
 
 export default function App() {
   const currentDay = useToday();
-  const [parents, setParents] = useState([]);
-  const [children, setChildren] = useState([]);
-  const [parentColors, setParentColors] = useState({});
-  const [childColors, setChildColors] = useState({});
-  const [parentLocations, setParentLocations] = useState({}); // parent -> home address
-  const [parentPhones, setParentPhones] = useState({});       // parent -> contact number
-  const [colorPicker, setColorPicker] = useState(null); // { type: 'parent'|'child', name }
-  const [entries, setEntries] = useState([
-    { id: generateId(), parent: '', beginDate: '', endDate: '', childrenPresent: {}, note: '' },
-  ]);
-  const [scheduleAssignments, setScheduleAssignments] = useState([]);
+  const store = useHouseholdStore();
+  const { parents, children, parentColors, childColors, parentLocations, parentPhones, entries, scheduleAssignments, reportingMode, customStart, customEnd, quarterYear, quarter, preset, analysisChild, viewMode } = store.data;
+  const { loaded } = store;
+  const { setParents, setParentColors, setChildColors, setParentLocations, setParentPhones, setEntries, setReportingMode, setCustomStart, setCustomEnd, setQuarterYear, setQuarter, setPreset, setAnalysisChild, setViewMode } = useMemo(() => Object.fromEntries(
+    ['parents', 'parentColors', 'childColors', 'parentLocations', 'parentPhones', 'entries', 'reportingMode', 'customStart', 'customEnd', 'quarterYear', 'quarter', 'preset', 'analysisChild', 'viewMode'].map((key) =>
+      ['set' + key[0].toUpperCase() + key.slice(1), (value) => store.setField(key, value,
+        ['parentLocations', 'parentPhones'].includes(key) ? { group: key } : undefined)])
+  ), [store.setField]);
+  const [colorPicker, setColorPicker] = useState(null);
   const [newParentName, setNewParentName] = useState('');
   const [newChildName, setNewChildName] = useState('');
-  const [loaded, setLoaded] = useState(false);
-
-  // Reporting
-  const [reportingMode, setReportingMode] = useState('custom');
-  const [customStart, setCustomStart] = useState('');
-  const [customEnd, setCustomEnd] = useState('');
-  const [quarterYear, setQuarterYear] = useState(new Date().getFullYear());
-  const [quarter, setQuarter] = useState('Q1');
-  const [preset, setPreset] = useState('year-to-date');
-  const [analysisChild, setAnalysisChild] = useState('all');
 
   // UI state
-  const [viewMode, setViewMode] = useState('calendar');
   const [showWizard, setShowWizard] = useState(false);
+  const [showShared, setShowShared] = useState(false);
   const [editingEntryId, setEditingEntryId] = useState(null);
+  const [reminderTarget, setReminderTarget] = useState(null);
   const [datePicker, setDatePicker] = useState(null); // { context, field, mode, draft }
   const [parentPickerEntryId, setParentPickerEntryId] = useState(null);
 
@@ -1172,57 +1154,38 @@ export default function App() {
   const todayStr = formatDateStr(today);
   const currentYear = today.getFullYear();
 
-  // ── persistence ──────────────────────────────────────────────────────────────
-
+  // Persistence and recovery are handled by the versioned household store.
   useEffect(() => {
-    loadData().then((data) => {
-      if (data) {
-        if (data.parents) setParents(data.parents);
-        if (data.children) setChildren(data.children);
-        if (data.parentColors) setParentColors(data.parentColors);
-        if (data.parentLocations) setParentLocations(data.parentLocations);
-        if (data.parentPhones) setParentPhones(data.parentPhones);
-        if (data.childColors) setChildColors(data.childColors);
-        if (data.entries) setEntries(data.entries);
-        if (data.scheduleAssignments) setScheduleAssignments(data.scheduleAssignments);
-        if (data.reportingMode) setReportingMode(data.reportingMode);
-        if (data.customStart) setCustomStart(data.customStart);
-        if (data.customEnd) setCustomEnd(data.customEnd);
-        if (data.quarterYear) setQuarterYear(data.quarterYear);
-        if (data.quarter) setQuarter(data.quarter);
-        if (data.preset) setPreset(data.preset);
-        if (data.analysisChild) setAnalysisChild(data.analysisChild);
-        if (data.viewMode) setViewMode(data.viewMode === 'list' ? 'entries' : data.viewMode);
-      }
-      // Auto-open the setup wizard on a fresh install (no parents saved yet).
-      if (!data || !data.parents || data.parents.length === 0) setShowWizard(true);
-      setLoaded(true);
-    });
-  }, []);
+    if (loaded && store.data.parents.length === 0) setShowWizard(true);
+  }, [loaded]);
+  const reminders = useReminders(store.data, loaded, (date) => {
+    setReminderTarget({ date: date || currentDay });
+    setEditingEntryId(null); setShowWizard(false); setViewMode('calendar');
+  });
 
-  const completeWizard = ({ parents: wp, parentColors: wpc, children: wc, childColors: wcc, entries: we, scheduleAssignments: wa }) => {
-    setParents(wp);
-    setParentColors(wpc);
-    setChildren(wc);
-    setChildColors(wcc);
-    setEntries(we);
-    setScheduleAssignments(wa);
+  const completeWizard = (household) => {
+    store.update({ ...household, viewMode: 'calendar' }, { label: 'Updated household setup and schedules' });
     setShowWizard(false);
-    setViewMode('calendar');
   };
 
-  useEffect(() => {
-    if (!loaded) return;
-    saveData({ parents, children, parentColors, childColors, parentLocations, parentPhones, entries, scheduleAssignments, reportingMode, customStart, customEnd, quarterYear, quarter, preset, analysisChild, viewMode });
-  }, [loaded, parents, children, parentColors, childColors, parentLocations, parentPhones, entries, scheduleAssignments, reportingMode, customStart, customEnd, quarterYear, quarter, preset, analysisChild, viewMode]);
+  const undoLastChange = () => {
+    const record = store.history[0];
+    if (!record) return;
+    Alert.alert('Undo last change?', record.label, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Undo', onPress: async () => {
+        try { await store.restore(record.id); setEditingEntryId(null); }
+        catch (error) { Alert.alert('Could not undo', error.message); }
+      } },
+    ]);
+  };
 
   // ── config ───────────────────────────────────────────────────────────────────
 
   const addParent = () => {
     const name = newParentName.trim();
     if (!name || parents.includes(name)) return;
-    setParents([...parents, name]);
-    setParentColors({ ...parentColors, [name]: nextColor(parentColors) });
+    store.update({ parents: [...parents, name], parentColors: { ...parentColors, [name]: nextColor(parentColors) } }, { label: 'Added parent' });
     setNewParentName('');
   };
 
@@ -1232,10 +1195,10 @@ export default function App() {
       { text: 'Cancel' },
       {
         text: 'Remove', style: 'destructive', onPress: () => {
-          setParents(parents.filter((p) => p !== parent));
-          const nc = { ...parentColors }; delete nc[parent]; setParentColors(nc);
-          const nl = { ...parentLocations }; delete nl[parent]; setParentLocations(nl);
-          const np = { ...parentPhones }; delete np[parent]; setParentPhones(np);
+          const nc = { ...parentColors }; delete nc[parent];
+          const nl = { ...parentLocations }; delete nl[parent];
+          const np = { ...parentPhones }; delete np[parent];
+          store.update({ parents: parents.filter((p) => p !== parent), parentColors: nc, parentLocations: nl, parentPhones: np }, { label: 'Removed parent' });
         },
       },
     ]);
@@ -1254,9 +1217,7 @@ export default function App() {
   const addChild = () => {
     const name = newChildName.trim();
     if (!name || children.includes(name)) return;
-    setChildren([...children, name]);
-    setChildColors({ ...childColors, [name]: nextColor(childColors) });
-    setEntries(entries.map((e) => ({ ...e, childrenPresent: { ...e.childrenPresent, [name]: true } })));
+    store.update({ children: [...children, name], childColors: { ...childColors, [name]: nextColor(childColors) } }, { label: 'Added child' });
     setNewChildName('');
   };
 
@@ -1266,14 +1227,15 @@ export default function App() {
       { text: 'Cancel' },
       {
         text: 'Remove', style: 'destructive', onPress: () => {
-          setChildren(children.filter((c) => c !== child));
-          const nc = { ...childColors }; delete nc[child]; setChildColors(nc);
-          setEntries(entries.map((e) => {
+          const nc = { ...childColors }; delete nc[child];
+          const remainingEntries = entries.map((e) => {
             const cp = { ...e.childrenPresent };
             delete cp[child];
             return { ...e, childrenPresent: cp };
-          }));
-          if (analysisChild === child) setAnalysisChild('all');
+          });
+          store.update({ children: children.filter((c) => c !== child), childColors: nc, entries: remainingEntries,
+            scheduleAssignments: scheduleAssignments.map((a) => ({ ...a, children: a.children.filter((c) => c !== child) })),
+            analysisChild: analysisChild === child ? 'all' : analysisChild }, { label: 'Removed child' });
         },
       },
     ]);
@@ -1310,18 +1272,16 @@ export default function App() {
   };
 
   const updateEntry = (id, field, value) => {
-    setEntries(entries.map((e) => (e.id === id ? { ...e, [field]: value } : e)));
+    store.update((data) => ({ entries: data.entries.map((e) => e.id === id ? { ...e, [field]: value } : e) }),
+      { label: 'Edited custody details', group: ['note', 'location', 'exchangePlace'].includes(field) ? `${id}:${field}` : null });
   };
 
   const clearAll = () => {
-    Alert.alert('Clear All', 'Clear all entries? This cannot be undone.', [
+    Alert.alert('Clear entries?', 'The current entries and schedules will be cleared. You can undo this from local change history.', [
       { text: 'Cancel' },
       {
         text: 'Clear', style: 'destructive', onPress: () => {
-          const cp = {};
-          children.forEach((c) => { cp[c] = true; });
-          setEntries([{ id: generateId(), parent: '', beginDate: '', endDate: '', childrenPresent: cp, note: '' }]);
-          setScheduleAssignments([]);
+          store.update({ entries: [], scheduleAssignments: [] }, { label: 'Cleared custody entries' });
         },
       },
     ]);
@@ -1329,26 +1289,13 @@ export default function App() {
 
   const resetAll = () => {
     Alert.alert(
-      'Reset all data',
-      'This erases all parents, children, colors, and entries, and reopens the setup wizard. This cannot be undone.',
+      'Reset household',
+      'Start a new household setup. The current household remains in local undo history and the recovery copy; this is not a permanent data erasure.',
       [
         { text: 'Cancel' },
         {
-          text: 'Reset', style: 'destructive', onPress: async () => {
-            try { await AsyncStorage.removeItem(STORAGE_KEY); } catch (e) {}
-            setParents([]);
-            setChildren([]);
-            setParentColors({});
-            setChildColors({});
-            setParentLocations({});
-            setParentPhones({});
-            setEntries([{ id: generateId(), parent: '', beginDate: '', endDate: '', childrenPresent: {}, note: '' }]);
-            setScheduleAssignments([]);
-            setReportingMode('custom');
-            setCustomStart('');
-            setCustomEnd('');
-            setAnalysisChild('all');
-            setViewMode('calendar');
+          text: 'Reset', style: 'destructive', onPress: () => {
+            store.update(defaults(), { label: 'Reset household' });
             setShowWizard(true);
           },
         },
@@ -1405,8 +1352,8 @@ export default function App() {
       'Replace existing entries or add to them?',
       [
         { text: 'Cancel' },
-        { text: 'Add to Existing', onPress: () => { setEntries([...entries, ...taggedEntries]); setScheduleAssignments([...scheduleAssignments, assignment]); setShowScheduleGen(false); } },
-        { text: 'Replace All', style: 'destructive', onPress: () => { setEntries(taggedEntries); setScheduleAssignments([assignment]); setShowScheduleGen(false); } },
+        { text: 'Add to Existing', onPress: () => { store.update({ entries: [...entries, ...taggedEntries], scheduleAssignments: [...scheduleAssignments, assignment] }, { label: 'Added generated schedule' }); setShowScheduleGen(false); } },
+        { text: 'Replace All', style: 'destructive', onPress: () => { store.update({ entries: taggedEntries, scheduleAssignments: [assignment] }, { label: 'Replaced all custody periods' }); setShowScheduleGen(false); } },
       ]
     );
   };
@@ -1607,6 +1554,7 @@ export default function App() {
 
   // ── render ───────────────────────────────────────────────────────────────────
 
+  if (store.loadError) return <RecoveryScreen store={store} />;
   if (!loaded) {
     return (
       <SafeAreaView style={styles.safeArea}>
@@ -1622,25 +1570,32 @@ export default function App() {
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right', 'bottom']}>
       <StatusBar barStyle="dark-content" backgroundColor="#f9fafb" />
+      <Modal visible={showShared} animationType="slide" onRequestClose={() => setShowShared(false)}>
+        {showShared && <SharedWorkspaceScreen localData={store.data} Calendar={CalendarView} today={currentDay} onClose={() => setShowShared(false)} />}
+      </Modal>
       {showWizard && (
         <SetupWizard
           initialData={{ parents, children, parentColors, childColors, entries, scheduleAssignments }}
           onComplete={completeWizard}
           onCancel={() => setShowWizard(false)}
+          onJoinShared={() => { setShowWizard(false); setShowShared(true); }}
         />
       )}
       <View
         style={{ flex: 1 }}
-        accessibilityElementsHidden={Boolean(editingEntry || showWizard || showScheduleGen)}
-        importantForAccessibility={(editingEntry || showWizard || showScheduleGen) ? 'no-hide-descendants' : 'auto'}
+        accessibilityElementsHidden={Boolean(editingEntry || showWizard || showScheduleGen || showShared)}
+        importantForAccessibility={(editingEntry || showWizard || showScheduleGen || showShared) ? 'no-hide-descendants' : 'auto'}
       >
       <View style={styles.appHeader}>
         <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={styles.brandMark}><Ionicons name="calendar-outline" size={23} color={theme.accent} /></View>
         <View style={{ flex: 1 }}>
           <Text style={styles.headerTitle}>Custody Calendar</Text>
-          <Text style={styles.headerSub}>On this device</Text>
+          <Text style={styles.headerSub}>{store.saveError ? 'Not saved' : store.saving ? 'Saving…' : 'Saved on this device'}</Text>
         </View>
+        <IconButton icon="people-outline" label="Open shared family" onPress={() => setShowShared(true)} />
+        <IconButton icon="arrow-undo-outline" label="Undo last change" disabled={!store.history.length || store.restoring} onPress={undoLastChange} />
       </View>
+      <SaveWarning store={store} />
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         {viewMode === 'entries' ? (
           <EntriesScreen
@@ -1668,12 +1623,13 @@ export default function App() {
               childColors={childColors}
             />
           ) : viewMode === 'calendar' ? (
-            <CalendarView today={currentDay} entries={entries} parents={parents} parentColors={parentColors} parentLocations={parentLocations} children={children} childColors={childColors} onCreateEntry={createEntryFromCalendar} onOpenEntry={setEditingEntryId} />
+            <CalendarView today={currentDay} reminderTarget={reminderTarget} entries={entries} parents={parents} parentColors={parentColors} parentLocations={parentLocations} children={children} childColors={childColors} onCreateEntry={createEntryFromCalendar} onOpenEntry={setEditingEntryId} />
           ) : viewMode === 'settings' ? (
           <>
           <View style={styles.screenIntro}>
             <Text style={styles.screenTitle}>Settings</Text>
           </View>
+          <ReliabilityPanel store={store} reminders={reminders} onRestored={() => { setEditingEntryId(null); setShowWizard(false); setViewMode('settings'); }} />
 
           <View style={styles.card}>
             <View style={styles.sectionHeader}>
@@ -1783,11 +1739,11 @@ export default function App() {
           </View>
 
           <View style={styles.card}>
-            <Text style={styles.sectionTitle}>Share and backup</Text>
+            <Text style={styles.sectionTitle}>Share and export</Text>
             {[
               { label: 'Share calendar', sub: 'Export an Apple or Google calendar file', icon: 'calendar-outline', action: exportICS },
               { label: 'Send Kid View', sub: 'Share a self-contained schedule page', icon: 'happy-outline', action: exportKidPage },
-              { label: 'Export CSV', sub: 'Back up entries and report totals', icon: 'download-outline', action: exportCSV },
+              { label: 'Export CSV', sub: 'Share entries and report totals, not a restorable backup', icon: 'download-outline', action: exportCSV },
             ].map((item) => (
               <TouchableOpacity key={item.label} style={styles.settingsAction} onPress={item.action} accessibilityRole="button">
                 <View style={styles.settingsActionIcon}><Ionicons name={item.icon} size={20} color="#2563eb" /></View>
@@ -1809,7 +1765,7 @@ export default function App() {
             </TouchableOpacity>
             <TouchableOpacity style={styles.destructiveRow} onPress={resetAll} accessibilityRole="button">
               <Ionicons name="refresh-outline" size={19} color="#dc2626" />
-              <Text style={styles.destructiveRowText}>Reset all app data</Text>
+              <Text style={styles.destructiveRowText}>Reset household</Text>
             </TouchableOpacity>
           </View>
           </>
@@ -1945,6 +1901,7 @@ export default function App() {
       </View>
 
       <EntryEditor
+        store={store}
         entry={editingEntry}
         parents={parents}
         children={children}
@@ -1956,6 +1913,8 @@ export default function App() {
         onOpenDate={openDatePicker}
         onOpenTime={openTimePicker}
       />
+
+      <RestoreProgress visible={store.restoring} />
 
       <NativePickerSheet
         picker={datePicker}

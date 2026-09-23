@@ -6,6 +6,7 @@
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
+    "plugins": ["expo-document-picker", "expo-notifications", "expo-secure-store"],
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
