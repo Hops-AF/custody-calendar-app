@@ -32,7 +32,7 @@ Each selected calendar date counts as one custody day for each included child. E
 
 ## Tech stack
 
-- [Expo](https://expo.dev/) (SDK 55) + React Native
+- [Expo](https://expo.dev/) (SDK 57) + React Native 0.86
 - `@react-native-async-storage/async-storage` — local persistence
 - `@react-native-community/datetimepicker` — native date picker
 - `expo-file-system` + `expo-sharing` - report exports and complete JSON backups
@@ -110,4 +110,4 @@ Scan the QR code with the Expo Go app to run on a physical device.
 - Data lives only on the device. Use **Save complete backup** for recoverable backups; use CSV for reports.
 - Run `npm test` for custody calculations, calendar logic, storage failures, backup validation, undo, and reminder planning. These tests do not prove notification delivery or on-device UI behavior.
 - See [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md) for first-release validation and outstanding device checks.
-- This project currently uses a canary Expo SDK build; if `npm install` reports peer-dependency conflicts, run `npm install --legacy-peer-deps`.
+- Built on stable Expo SDK 57. Run the app in Expo Go 57 (or a development build); older Expo Go versions will not load it.

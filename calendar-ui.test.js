@@ -66,3 +66,17 @@ test('holiday details override the recurring assignment and missing logistics st
   assert.match(dayShareText(base.date, details), /Exchange time: Not set/);
   assert.match(dayShareText(base.date, details), /Exchange place: Not set/);
 });
+
+test('app code only uses StyleSheet members the installed React Native provides', () => {
+  // A removed member (e.g. absoluteFillObject in RN 0.86) spreads as nothing and silently breaks layout.
+  const fs = require('node:fs');
+  const exportsSrc = fs.readFileSync(require.resolve('react-native/Libraries/StyleSheet/StyleSheetExports.js'), 'utf8');
+  const sources = fs.readdirSync(__dirname).filter((f) => f.endsWith('.js') && !f.endsWith('.test.js'));
+  const used = new Set();
+  for (const file of sources) {
+    for (const [, member] of fs.readFileSync(`${__dirname}/${file}`, 'utf8').matchAll(/StyleSheet\.([A-Za-z]+)/g)) used.add(member);
+  }
+  for (const member of used) {
+    assert.match(exportsSrc, new RegExp(`\\b${member}\\b\\s*[(:,]|get ${member}\\b`), `StyleSheet.${member} is not provided by react-native`);
+  }
+});

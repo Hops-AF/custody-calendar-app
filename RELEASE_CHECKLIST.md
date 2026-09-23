@@ -52,8 +52,8 @@ Small/large device coverage, full VoiceOver navigation, large-text layouts, ordi
 
 ## Release gates
 
-- [ ] Review and resolve or explicitly assess remaining dependency advisories. The full audit after compatible fixes reports 31 affected packages (20 moderate, 11 high, zero critical). Several are inherited through the pinned canary Expo/Metro toolchain; an audit count alone does not establish runtime reachability. Do not force major upgrades without compatibility testing.
-- [ ] Move from the canary toolchain to a tested, supported stable SDK before public distribution.
+- [ ] Review and resolve or explicitly assess remaining dependency advisories. On SDK 57 (September 22, 2026) the audit reports 13 moderate, zero high, zero critical, all in Expo build/config tooling (`@expo/cli`, `@expo/config-plugins`, `xcode`, `uuid`) rather than app runtime code. npm's suggested "fix" downgrades Expo and must not be applied.
+- [x] Move from the canary toolchain to a tested, supported stable SDK before public distribution. Upgraded to Expo SDK 57.0.24 / React Native 0.86.3 on September 22, 2026: expo-doctor 21/21, 83 tests, iOS/Android bundle exports, and an Expo Go 57 simulator pass of Calendar, My Days, Entries (editor and date picker), Reports, and Settings. RN 0.86 removed `StyleSheet.absoluteFillObject`, which silently broke the entry editor overlay; fixed, with a regression test.
 - [ ] Create and test a signed development/release build. Expo Go and bundle export are insufficient release evidence.
 - [ ] Set final app identifiers, release version/build numbers, app icon, privacy disclosures, and distribution configuration.
 - [ ] Complete physical-device tests and a real external-backup recovery drill before TestFlight or App Store distribution.

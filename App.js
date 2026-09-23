@@ -2336,7 +2336,7 @@ const styles = StyleSheet.create({
   listFooterText: { fontSize: 13, color: '#4b5563', fontWeight: '600' },
   listFooterValue: { fontSize: 16, color: '#111827', fontWeight: '700' },
 
-  editorSafeArea: { ...StyleSheet.absoluteFillObject, zIndex: 20, backgroundColor: '#f9fafb' },
+  editorSafeArea: { ...StyleSheet.absoluteFill, zIndex: 20, backgroundColor: '#f9fafb' },
   editorHeader: {
     minHeight: 52,
     flexDirection: 'row',
@@ -2488,7 +2488,7 @@ const styles = StyleSheet.create({
   calDay: { flex: 1, borderRadius: 8, alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: 'transparent' },
   calDayNum: { fontSize: 14, fontWeight: '600' },
   calDayNumOverlay: { zIndex: 2, textShadowColor: 'rgba(0,0,0,0.55)', textShadowRadius: 2, textShadowOffset: { width: 0, height: 1 } },
-  calSplitFill: { ...StyleSheet.absoluteFillObject, flexDirection: 'row', borderRadius: 6, overflow: 'hidden' },
+  calSplitFill: { ...StyleSheet.absoluteFill, flexDirection: 'row', borderRadius: 6, overflow: 'hidden' },
   calHolidayMark: { position: 'absolute', top: 0, right: 1, fontSize: 9, zIndex: 3 },
   calDayToday: { fontWeight: '800', textDecorationLine: 'underline' },
   calDaySelected: { borderColor: '#182421', borderWidth: 2 },
@@ -2569,7 +2569,7 @@ const styles = StyleSheet.create({
   },
   footerText: { fontSize: 15, fontWeight: '600', color: '#374151' },
 
-  wizardOverlay: { ...StyleSheet.absoluteFillObject, zIndex: 30, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center', padding: 24 },
+  wizardOverlay: { ...StyleSheet.absoluteFill, zIndex: 30, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center', padding: 24 },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center', padding: 24 },
   modalBox: { backgroundColor: '#fff', borderRadius: 8, width: '100%', maxWidth: 600, overflow: 'hidden', paddingBottom: 8 },
   modalTitle: { fontSize: 17, fontWeight: '700', color: '#111827', padding: 16, borderBottomWidth: 1, borderBottomColor: '#e5e7eb' },

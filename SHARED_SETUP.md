@@ -65,5 +65,5 @@ Remaining live release gates:
 - [ ] Revoke access while another device is open; verify refresh hides data and direct API requests fail.
 - [ ] Test account deletion against real Supabase Auth tables, including sole-member deletion and two-parent ownership transfer.
 - [ ] Test keyboards, large text, screen readers, smaller/larger screens, and secure-session persistence in signed builds.
-- [ ] Complete remaining first-release gates in `RELEASE_CHECKLIST.md`, including Expo canary/security migration and physical-device checks.
+- [ ] Complete remaining first-release gates in `RELEASE_CHECKLIST.md`, including the remaining dependency-advisory review and physical-device checks. (The Expo canary migration is complete: SDK 57.)
 - [ ] Publish support, privacy, retention, and account-deletion disclosures before submission.
