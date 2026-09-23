@@ -20,6 +20,7 @@ A React Native / Expo app for tracking child custody schedules and generating cu
   - 2-2-3 rotation (50/50)
 - **Reporting & analysis** — custom range, quarter, or presets (YTD, last 12 months, calendar year), with per-parent custody-day counts and percentages, filterable by child
 - **CSV export** — share a report via the native share sheet
+- **Printable fridge calendar** - Settings > Print calendar prints this month, next month, or the next 3 months (one US Letter landscape page each), or saves them as a PDF from the print sheet. Days are shaded and labeled by parent so it reads in black and white, with exchange days and times, holiday overrides, split sibling days, and schedule conflicts marked. Days without an entry show the primary parent. Notes, addresses, phone numbers, and exchange places are never printed.
 - **Visible local saving** - save status, retryable errors, and a last-good recovery copy
 - **Complete backup and restore** - JSON files with household, entries, schedules, settings, and retained history; preview before replacement
 - **Undo and local history** - recover recent household changes, including deleted entries and replaced schedules
@@ -38,6 +39,7 @@ Each selected calendar date counts as one custody day for each included child. E
 - `expo-file-system` + `expo-sharing` - report exports and complete JSON backups
 - `expo-document-picker` - backup selection and restore preview
 - `expo-notifications` - local exchange reminders; no push server or account required
+- `expo-print` - printable calendar and PDF
 
 ## Protect your data
 
@@ -99,6 +101,7 @@ Scan the QR code with the Expo Go app to run on a physical device.
 - `local-store.js` / `use-household-store.js` - versioned persistence, validation, backup, undo, and recovery
 - `reminder-plan.js` / `use-reminders.js` - custody-aware planning and local notification scheduling
 - `reliability-ui.js` - backup, history, reminder settings, and recovery screens
+- `print-calendar.js` - printable month pages (HTML rendered to PDF by `expo-print`)
 - `custody-engine.js` — tested per-child custody ownership and reporting logic
 - `custody-engine.test.js` — ownership, conflict, split-schedule, and percentage tests
 - `index.js` — Expo entry point

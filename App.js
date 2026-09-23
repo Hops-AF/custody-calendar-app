@@ -9,6 +9,7 @@ import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
+import * as Print from 'expo-print';
 import { IconButton, PersonBadge, ChildSelector, DetailLine, SectionHeading, Field as TextInput, theme } from './family-ui';
 import { useHouseholdStore } from './use-household-store';
 import { useReminders } from './use-reminders';
@@ -26,6 +27,7 @@ const {
   buildKidPage,
   getKidView,
 } = require('./custody-engine');
+const { buildPrintableCalendar } = require('./print-calendar');
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -1526,6 +1528,41 @@ export default function App() {
     }
   };
 
+  // Print a month grid for the fridge. The print sheet also offers Save to Files / PDF.
+  const printCalendar = () => {
+    if (parents.length === 0) {
+      Alert.alert('Nothing to print', 'Add parents and a schedule first.');
+      return;
+    }
+    const now = new Date();
+    const monthsFrom = (offset, count) => Array.from({ length: count }, (_, i) => {
+      const d = new Date(now.getFullYear(), now.getMonth() + offset + i, 1);
+      return { year: d.getFullYear(), month: d.getMonth() };
+    });
+    const print = async (months) => {
+      try {
+        const html = buildPrintableCalendar({
+          months, entries, parents, children,
+          parentColors: Object.fromEntries(parents.map((p) => [p, colorForName(p, parents, parentColors)])),
+          printedOn: now.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+        });
+        // Render at an exact US Letter landscape size (points) so each month is one page.
+        const { uri } = await Print.printToFileAsync({ html, width: 792, height: 612, margins: { left: 0, top: 0, right: 0, bottom: 0 } });
+        await Print.printAsync({ uri });
+      } catch (e) {
+        // Closing the print sheet without printing rejects too; that is a cancel, not a failure.
+        if (e?.code === 'ERR_PRINT_INCOMPLETE' || /did not complete/i.test(e?.message || '')) return;
+        Alert.alert('Print Failed', e.message);
+      }
+    };
+    Alert.alert('Print calendar', 'Names, custody days and exchange times only. Notes, addresses, phone numbers and exchange places are left off.', [
+      { text: 'This month', onPress: () => print(monthsFrom(0, 1)) },
+      { text: 'Next month', onPress: () => print(monthsFrom(1, 1)) },
+      { text: 'Next 3 months', onPress: () => print(monthsFrom(0, 3)) },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  };
+
   // ── date picker ──────────────────────────────────────────────────────────────
 
   const openDatePicker = (context, field, currentStr) => {
@@ -1742,6 +1779,7 @@ export default function App() {
             <Text style={styles.sectionTitle}>Share and export</Text>
             {[
               { label: 'Share calendar', sub: 'Export an Apple or Google calendar file', icon: 'calendar-outline', action: exportICS },
+              { label: 'Print calendar', sub: 'A month page for the fridge, or save as PDF', icon: 'print-outline', action: printCalendar },
               { label: 'Send Kid View', sub: 'Share a self-contained schedule page', icon: 'happy-outline', action: exportKidPage },
               { label: 'Export CSV', sub: 'Share entries and report totals, not a restorable backup', icon: 'download-outline', action: exportCSV },
             ].map((item) => (
