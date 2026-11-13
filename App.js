@@ -29,6 +29,7 @@ const {
   getKidView,
 } = require('./custody-engine');
 const { buildPrintableCalendar } = require('./print-calendar');
+const { buildCustodyReport } = require('./report-pdf');
 const { applyHolidayRule, removeHolidayRule } = require('./holiday-rules');
 const { computeDeviationReport, deviationsOnDate, childNames, TYPE_LABELS } = require('./deviation-log');
 
@@ -1632,6 +1633,42 @@ export default function App() {
     ]);
   };
 
+  // A multi-page PDF of the reporting period, shared through the system sheet so it can be
+  // saved to Files or sent on.
+  const exportReport = () => {
+    const { start, end } = reportingWindow;
+    if (!start || !end || start > end) {
+      Alert.alert('Choose a period', 'Set a reporting period with an end date on or after the start date.');
+      return;
+    }
+    const create = async (includeNotes) => {
+      try {
+        const now = new Date();
+        const html = buildCustodyReport({
+          entries, parents, children, deviations, holidayRules, start, end,
+          childFilter: analysisChild, includeNotes,
+          parentColors: Object.fromEntries(parents.map((p) => [p, colorForName(p, parents, parentColors)])),
+          preparedOn: now.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+        });
+        const { uri } = await Print.printToFileAsync({ html, width: 792, height: 612, margins: { left: 0, top: 0, right: 0, bottom: 0 } });
+        const who = analysisChild === 'all' ? 'All' : analysisChild.replace(/[^A-Za-z0-9]+/g, '_');
+        const target = FileSystem.documentDirectory + `Custody_Report_${who}_${start}_to_${end}.pdf`;
+        await FileSystem.deleteAsync(target, { idempotent: true });
+        await FileSystem.moveAsync({ from: uri, to: target });
+        await Sharing.shareAsync(target, { mimeType: 'application/pdf', UTI: 'com.adobe.pdf', dialogTitle: 'Share custody report' });
+      } catch (e) {
+        Alert.alert('Report failed', e.message);
+      }
+    };
+    Alert.alert('Custody report (PDF)',
+      'Covers the period and children selected above: custody totals, planned vs. actual, holidays, your log, and a calendar for each month. Private entry notes, addresses, phone numbers and exchange places are left out.',
+      [
+        { text: 'Include log notes', onPress: () => create(true) },
+        { text: 'Leave log notes out', onPress: () => create(false) },
+        { text: 'Cancel', style: 'cancel' },
+      ]);
+  };
+
   // ── date picker ──────────────────────────────────────────────────────────────
 
   const openDatePicker = (context, field, currentStr) => {
@@ -2010,6 +2047,19 @@ export default function App() {
             <View style={styles.card}>
               <DeviationReport report={deviationReport} unit={analysisChild === 'all' ? 'child-days' : 'days'}
                 colorFor={(parent) => colorForName(parent, parents, parentColors)} onOpen={openDeviation} />
+            </View>
+          ) : null}
+
+          {reportingWindow.start && reportingWindow.end ? (
+            <View style={styles.card}>
+              <TouchableOpacity style={styles.settingsAction} onPress={exportReport} accessibilityRole="button">
+                <View style={styles.settingsActionIcon}><Ionicons name="document-text-outline" size={20} color="#2563eb" /></View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.settingsActionTitle}>Create PDF report</Text>
+                  <Text style={styles.settingsActionSub}>This period, for your records or your attorney</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={19} color="#9ca3af" />
+              </TouchableOpacity>
             </View>
           ) : null}
 
