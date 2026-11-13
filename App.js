@@ -15,6 +15,7 @@ import { useHouseholdStore } from './use-household-store';
 import { useReminders } from './use-reminders';
 import { ReliabilityPanel, RecoveryScreen, SaveWarning, RestoreProgress } from './reliability-ui';
 import { SharedWorkspaceScreen } from './shared-ui';
+import { HolidayRulesScreen, DeviationEditor, DayLog, DeviationReport, newDeviation } from './records-ui';
 const { defaults } = require('./local-store');
 const { monthWeeks, textOnColor, dayDetails, dayShareText } = require('./calendar-ui');
 const {
@@ -28,6 +29,8 @@ const {
   getKidView,
 } = require('./custody-engine');
 const { buildPrintableCalendar } = require('./print-calendar');
+const { applyHolidayRule, removeHolidayRule } = require('./holiday-rules');
+const { computeDeviationReport, deviationsOnDate, childNames, TYPE_LABELS } = require('./deviation-log');
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -317,7 +320,7 @@ function NativePickerSheet({ picker, title, onChange, onCancel, onConfirm }) {
 
 // ── CalendarView ──────────────────────────────────────────────────────────────
 
-function CalendarView({ entries, parents, parentColors, parentLocations, children, childColors, onCreateEntry, onOpenEntry, today, reminderTarget, readOnly = false, saveLabel = 'Save period', holidayNameEnabled = true }) {
+function CalendarView({ entries, parents, parentColors, parentLocations, children, childColors, onCreateEntry, onOpenEntry, today, reminderTarget, readOnly = false, saveLabel = 'Save period', holidayNameEnabled = true, deviations = [], onLogDay, onOpenDeviation }) {
   const [viewYear, setViewYear] = useState(() => toDate(today).getFullYear());
   const [viewMonth, setViewMonth] = useState(() => toDate(today).getMonth());
   const [selectedDate, setSelectedDate] = useState(today);
@@ -342,6 +345,8 @@ function CalendarView({ entries, parents, parentColors, parentLocations, childre
   const details = useMemo(() => dayDetails({
     date: selectedDate, entries, parents, children, childFilter: activeChild, parentLocations,
   }), [selectedDate, entries, parents, children, activeChild, parentLocations]);
+  const loggedDates = useMemo(() => new Set(weeks.flat().filter((date) => date && deviationsOnDate(date, deviations, activeChild).length)),
+    [weeks, deviations, activeChild]);
   const monthTally = {};
   Object.values(dayStates).forEach((state) => state.childStates.forEach((child) => {
     if (child.type === 'single') monthTally[child.parent] = (monthTally[child.parent] || 0) + 1;
@@ -406,7 +411,8 @@ function CalendarView({ entries, parents, parentColors, parentLocations, childre
             return <Pressable key={date} onPress={() => selectDate(date)} style={styles.calCell}
               accessibilityRole="button" accessibilityState={{ selected }}
               accessibilityLabel={displayDate(date) + (date === today ? ', today' : '') + ', ' +
-                (state.type === 'conflict' ? 'Schedule needs review' : state.type === 'split' ? 'Different plans by child' : state.parent || 'No explicit entry')}
+                (state.type === 'conflict' ? 'Schedule needs review' : state.type === 'split' ? 'Different plans by child' : state.parent || 'No explicit entry') +
+                (loggedDates.has(date) ? ', change logged' : '')}
             >
               {({ pressed }) => <View style={[styles.calDay, { backgroundColor: color }, selected && styles.calDaySelected, pressed && { opacity: 0.65 }]}>
                 {state.type === 'split' && <View style={styles.calSplitFill}>{state.childStates.map((c, i) =>
@@ -416,6 +422,7 @@ function CalendarView({ entries, parents, parentColors, parentLocations, childre
                 {date === today && <View style={[styles.todayDot, { backgroundColor: state.type === 'split' ? '#182421' : foreground }]} />}
                 {state.type === 'conflict' && <Ionicons name="alert-circle" size={13} color="#b42318" style={styles.dayMarker} />}
                 {state.isException && state.type !== 'conflict' && <Ionicons name="star" size={9} color={foreground} style={styles.dayMarker} />}
+                {loggedDates.has(date) && <Ionicons name="flag" size={9} color={state.type === 'split' ? '#182421' : foreground} style={styles.dayLogMarker} />}
                 {selected && <View style={styles.selectedTick}><Ionicons name="checkmark" size={10} color="#fff" /></View>}
               </View>}
             </Pressable>;
@@ -478,6 +485,7 @@ function CalendarView({ entries, parents, parentColors, parentLocations, childre
             {d.location ? <DetailLine icon="home-outline" text={d.location} /> : null}
           </>}
         </View>)}
+        {!readOnly && onLogDay ? <DayLog date={selectedDate} deviations={deviations} child={activeChild} onLog={onLogDay} onOpen={onOpenDeviation} /> : null}
       </View>}
       <View style={styles.sectionBand}>
         <SectionHeading title="Recorded this month" subtitle={activeChild || (children.length > 1 ? 'Child-days across all children' : 'Custody days')} />
@@ -1009,6 +1017,12 @@ function EntryEditor({ entry, parents, children, parentLocations, onClose, onDel
                 <Text style={styles.managedNoticeText}>Part of a generated schedule. Rebuilding that schedule may replace edits.</Text>
               </View>
             ) : null}
+            {entry.holidayRuleId ? (
+              <View style={styles.managedNotice}>
+                <Ionicons name="star-outline" size={17} color="#1d4ed8" />
+                <Text style={styles.managedNoticeText}>Created by a holiday rule. Saving that rule again replaces edits made here.</Text>
+              </View>
+            ) : null}
 
             <View style={styles.editorSection}>
               <View style={styles.switchRow}>
@@ -1121,7 +1135,7 @@ function EntryEditor({ entry, parents, children, parentLocations, onClose, onDel
 export default function App() {
   const currentDay = useToday();
   const store = useHouseholdStore();
-  const { parents, children, parentColors, childColors, parentLocations, parentPhones, entries, scheduleAssignments, reportingMode, customStart, customEnd, quarterYear, quarter, preset, analysisChild, viewMode } = store.data;
+  const { parents, children, parentColors, childColors, parentLocations, parentPhones, entries, scheduleAssignments, holidayRules, deviations, reportingMode, customStart, customEnd, quarterYear, quarter, preset, analysisChild, viewMode } = store.data;
   const { loaded } = store;
   const { setParents, setParentColors, setChildColors, setParentLocations, setParentPhones, setEntries, setReportingMode, setCustomStart, setCustomEnd, setQuarterYear, setQuarter, setPreset, setAnalysisChild, setViewMode } = useMemo(() => Object.fromEntries(
     ['parents', 'parentColors', 'childColors', 'parentLocations', 'parentPhones', 'entries', 'reportingMode', 'customStart', 'customEnd', 'quarterYear', 'quarter', 'preset', 'analysisChild', 'viewMode'].map((key) =>
@@ -1135,6 +1149,8 @@ export default function App() {
   // UI state
   const [showWizard, setShowWizard] = useState(false);
   const [showShared, setShowShared] = useState(false);
+  const [showHolidays, setShowHolidays] = useState(false);
+  const [deviationTarget, setDeviationTarget] = useState(null); // { record, isNew }
   const [editingEntryId, setEditingEntryId] = useState(null);
   const [reminderTarget, setReminderTarget] = useState(null);
   const [datePicker, setDatePicker] = useState(null); // { context, field, mode, draft }
@@ -1237,6 +1253,8 @@ export default function App() {
           });
           store.update({ children: children.filter((c) => c !== child), childColors: nc, entries: remainingEntries,
             scheduleAssignments: scheduleAssignments.map((a) => ({ ...a, children: a.children.filter((c) => c !== child) })),
+            holidayRules: holidayRules.map((rule) => ({ ...rule, children: rule.children.filter((c) => c !== child) })),
+            deviations: deviations.map((d) => { const kept = { ...d.children }; delete kept[child]; return { ...d, children: kept }; }),
             analysisChild: analysisChild === child ? 'all' : analysisChild }, { label: 'Removed child' });
         },
       },
@@ -1279,14 +1297,44 @@ export default function App() {
   };
 
   const clearAll = () => {
-    Alert.alert('Clear entries?', 'The current entries and schedules will be cleared. You can undo this from local change history.', [
+    Alert.alert('Clear entries?', 'The current entries, schedules and holiday rules will be cleared. Your planned-vs-actual log is kept. You can undo this from local change history.', [
       { text: 'Cancel' },
       {
         text: 'Clear', style: 'destructive', onPress: () => {
-          store.update({ entries: [], scheduleAssignments: [] }, { label: 'Cleared custody entries' });
+          store.update({ entries: [], scheduleAssignments: [], holidayRules: [] }, { label: 'Cleared custody entries' });
         },
       },
     ]);
+  };
+
+  // ── holiday rules and the planned-vs-actual log ──────────────────────────────
+
+  const saveHolidayRule = (rule) => {
+    try { applyHolidayRule(store.data, rule); }
+    catch (error) { Alert.alert('Could not save holiday rule', error.message); return false; }
+    store.update((data) => applyHolidayRule(data, rule), { label: `Saved holiday rule: ${rule.name}`.slice(0, 200) });
+    return true;
+  };
+
+  const deleteHolidayRule = (id) => {
+    store.update((data) => removeHolidayRule(data, id), { label: 'Deleted holiday rule' });
+  };
+
+  const logDay = (date) => setDeviationTarget({ isNew: true, record: newDeviation({ id: generateId(), date, children }) });
+  const openDeviation = (record) => setDeviationTarget({ isNew: false, record: { minutesLate: 15, lateParent: '', actualParent: '', ...record } });
+
+  const saveDeviation = (record) => {
+    store.update((data) => ({
+      deviations: data.deviations.some((d) => d.id === record.id)
+        ? data.deviations.map((d) => (d.id === record.id ? record : d))
+        : [...data.deviations, record],
+    }), { label: `Logged ${TYPE_LABELS[record.type].toLowerCase()} on ${record.date}` });
+    setDeviationTarget(null);
+  };
+
+  const deleteDeviation = (id) => {
+    store.update((data) => ({ deviations: data.deviations.filter((d) => d.id !== id) }), { label: 'Deleted log entry' });
+    setDeviationTarget(null);
   };
 
   const resetAll = () => {
@@ -1394,6 +1442,15 @@ export default function App() {
     childFilter: analysisChild,
   }), [entries, reportingWindow, analysisChild, children, parents]);
   const windowSummary = summaryResult.rows;
+  const deviationReport = useMemo(() => computeDeviationReport({
+    entries,
+    parents,
+    children,
+    deviations,
+    start: reportingWindow.start,
+    end: reportingWindow.end,
+    childFilter: analysisChild,
+  }), [entries, deviations, reportingWindow, analysisChild, children, parents]);
 
   const footerTotals = useMemo(() => {
     let totalDays = 0;
@@ -1441,6 +1498,18 @@ export default function App() {
       csv += summaryRows.length > 0
         ? csvRow(summaryHeaders) + '\n' + summaryRows.map(csvRow).join('\n')
         : 'No data for selected window';
+
+      if (deviationReport.rows.length > 0) {
+        csv += `\n\n# PLANNED VS ACTUAL\n# ${windowLabel}\n# Days with nothing logged count as going to plan.\n`;
+        csv += csvRow(['Parent', 'Planned Days', 'Planned %', 'Actual Days', 'Actual %', 'Change']) + '\n';
+        csv += deviationReport.rows.map((r) => csvRow([r.parent, r.plannedDays, `${r.plannedPercentage}%`, r.actualDays, `${r.actualPercentage}%`, r.difference])).join('\n');
+      }
+      if (deviations.length > 0) {
+        const logged = [...deviations].sort((a, b) => a.date.localeCompare(b.date));
+        csv += '\n\n# LOGGED CHANGES (all dates)\n';
+        csv += csvRow(['Date', 'Through', 'Type', 'Children', 'Actually With', 'Minutes Late', 'Late Parent', 'Note', 'Logged At']) + '\n';
+        csv += logged.map((d) => csvRow([d.date, d.endDate, TYPE_LABELS[d.type], childNames(d).join('; '), d.actualParent || '', d.minutesLate ?? '', d.lateParent || '', d.note, d.loggedAt])).join('\n');
+      }
 
       const path = FileSystem.documentDirectory + `Custody_Calendar_${todayStr}.csv`;
       await FileSystem.writeAsStringAsync(path, csv, { encoding: FileSystem.EncodingType.UTF8 });
@@ -1620,8 +1689,8 @@ export default function App() {
       )}
       <View
         style={{ flex: 1 }}
-        accessibilityElementsHidden={Boolean(editingEntry || showWizard || showScheduleGen || showShared)}
-        importantForAccessibility={(editingEntry || showWizard || showScheduleGen || showShared) ? 'no-hide-descendants' : 'auto'}
+        accessibilityElementsHidden={Boolean(editingEntry || showWizard || showScheduleGen || showShared || showHolidays || deviationTarget)}
+        importantForAccessibility={(editingEntry || showWizard || showScheduleGen || showShared || showHolidays || deviationTarget) ? 'no-hide-descendants' : 'auto'}
       >
       <View style={styles.appHeader}>
         <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants" style={styles.brandMark}><Ionicons name="calendar-outline" size={23} color={theme.accent} /></View>
@@ -1660,7 +1729,7 @@ export default function App() {
               childColors={childColors}
             />
           ) : viewMode === 'calendar' ? (
-            <CalendarView today={currentDay} reminderTarget={reminderTarget} entries={entries} parents={parents} parentColors={parentColors} parentLocations={parentLocations} children={children} childColors={childColors} onCreateEntry={createEntryFromCalendar} onOpenEntry={setEditingEntryId} />
+            <CalendarView today={currentDay} reminderTarget={reminderTarget} entries={entries} parents={parents} parentColors={parentColors} parentLocations={parentLocations} children={children} childColors={childColors} onCreateEntry={createEntryFromCalendar} onOpenEntry={setEditingEntryId} deviations={deviations} onLogDay={logDay} onOpenDeviation={openDeviation} />
           ) : viewMode === 'settings' ? (
           <>
           <View style={styles.screenIntro}>
@@ -1773,6 +1842,14 @@ export default function App() {
               </View>
               <Ionicons name="chevron-forward" size={19} color="#9ca3af" />
             </TouchableOpacity>
+            <TouchableOpacity style={styles.settingsAction} onPress={() => setShowHolidays(true)} accessibilityRole="button">
+              <View style={styles.settingsActionIcon}><Ionicons name="star-outline" size={20} color="#2563eb" /></View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.settingsActionTitle}>Holiday rules</Text>
+                <Text style={styles.settingsActionSub}>{holidayRules.length ? `${holidayRules.length} ${holidayRules.length === 1 ? 'rule' : 'rules'}, repeated every year` : 'Alternate holidays by even and odd years'}</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={19} color="#9ca3af" />
+            </TouchableOpacity>
           </View>
 
           <View style={styles.card}>
@@ -1781,7 +1858,7 @@ export default function App() {
               { label: 'Share calendar', sub: 'Export an Apple or Google calendar file', icon: 'calendar-outline', action: exportICS },
               { label: 'Print calendar', sub: 'A month page for the fridge, or save as PDF', icon: 'print-outline', action: printCalendar },
               { label: 'Send Kid View', sub: 'Share a self-contained schedule page', icon: 'happy-outline', action: exportKidPage },
-              { label: 'Export CSV', sub: 'Share entries and report totals, not a restorable backup', icon: 'download-outline', action: exportCSV },
+              { label: 'Export CSV', sub: 'Share entries, report totals and your log, not a restorable backup', icon: 'download-outline', action: exportCSV },
             ].map((item) => (
               <TouchableOpacity key={item.label} style={styles.settingsAction} onPress={item.action} accessibilityRole="button">
                 <View style={styles.settingsActionIcon}><Ionicons name={item.icon} size={20} color="#2563eb" /></View>
@@ -1929,6 +2006,13 @@ export default function App() {
               </View>
           </View>
 
+          {reportingWindow.start && reportingWindow.end ? (
+            <View style={styles.card}>
+              <DeviationReport report={deviationReport} unit={analysisChild === 'all' ? 'child-days' : 'days'}
+                colorFor={(parent) => colorForName(parent, parents, parentColors)} onOpen={openDeviation} />
+            </View>
+          ) : null}
+
           </>
           ) : null}
 
@@ -1950,6 +2034,26 @@ export default function App() {
         onOpenParent={setParentPickerEntryId}
         onOpenDate={openDatePicker}
         onOpenTime={openTimePicker}
+      />
+
+      <HolidayRulesScreen
+        visible={showHolidays}
+        data={store.data}
+        year={currentYear}
+        newId={generateId}
+        colorFor={(parent) => colorForName(parent, parents, parentColors)}
+        onSave={saveHolidayRule}
+        onDelete={deleteHolidayRule}
+        onClose={() => setShowHolidays(false)}
+      />
+      <DeviationEditor
+        target={deviationTarget}
+        data={store.data}
+        today={currentDay}
+        colorFor={(parent) => colorForName(parent, parents, parentColors)}
+        onSave={saveDeviation}
+        onDelete={deleteDeviation}
+        onClose={() => setDeviationTarget(null)}
       />
 
       <RestoreProgress visible={store.restoring} />
@@ -2196,6 +2300,7 @@ const styles = StyleSheet.create({
   splitNumber: { backgroundColor: '#fff', color: theme.ink, paddingHorizontal: 4, borderRadius: 3, overflow: 'hidden' },
   selectedTick: { position: 'absolute', right: -1, bottom: -1, width: 14, height: 14, backgroundColor: theme.ink, borderTopLeftRadius: 4, alignItems: 'center', justifyContent: 'center' },
   dayMarker: { position: 'absolute', top: 1, right: 1 },
+  dayLogMarker: { position: 'absolute', top: 2, left: 2 },
   calendarLegend: { flexDirection: 'row', flexWrap: 'wrap', gap: 14, marginTop: 16 },
   legendItem: { flexDirection: 'row', alignItems: 'center' },
   legendCaption: { fontSize: 12, color: theme.muted },

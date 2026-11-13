@@ -18,6 +18,8 @@ A React Native / Expo app for tracking child custody schedules and generating cu
   - Every Other Weekend + Midweek (~70/30)
   - Joint / Alternating Weekly (50/50)
   - 2-2-3 rotation (50/50)
+- **Holiday rules** - Settings > Holiday rules. Pick a holiday (or any date, such as a birthday), who has it in even and odd years, how many days before and after it covers, and which years. The app adds it every year as a holiday period that overrides the regular schedule. Saving a rule again rebuilds its days; school breaks, whose dates change yearly, are still added from the calendar.
+- **Planned vs. actual log** - on any calendar day, **Log what happened**: a late exchange (minutes, and who was late), missed time, or an agreed swap, with a private note. Logged days are flagged on the calendar. Reports compares planned and actual days per parent for the reporting period and lists each logged change; the CSV export includes both. Days with nothing logged count as going to plan. The log is one parent's own record on this device, not something the other parent has confirmed.
 - **Reporting & analysis** — custom range, quarter, or presets (YTD, last 12 months, calendar year), with per-parent custody-day counts and percentages, filterable by child
 - **CSV export** — share a report via the native share sheet
 - **Printable fridge calendar** - Settings > Print calendar prints this month, next month, or the next 3 months (one US Letter landscape page each), or saves them as a PDF from the print sheet. Days are shaded and labeled by parent so it reads in black and white, with exchange days and times, holiday overrides, split sibling days, and schedule conflicts marked. Days without an entry show the primary parent. Notes, addresses, phone numbers, and exchange places are never printed.
@@ -102,6 +104,9 @@ Scan the QR code with the Expo Go app to run on a physical device.
 - `reminder-plan.js` / `use-reminders.js` - custody-aware planning and local notification scheduling
 - `reliability-ui.js` - backup, history, reminder settings, and recovery screens
 - `print-calendar.js` - printable month pages (HTML rendered to PDF by `expo-print`)
+- `holiday-rules.js` - holiday dates and yearly rule expansion
+- `deviation-log.js` - planned-vs-actual log and its report
+- `records-ui.js` - holiday rule and log screens
 - `custody-engine.js` — tested per-child custody ownership and reporting logic
 - `custody-engine.test.js` — ownership, conflict, split-schedule, and percentage tests
 - `index.js` — Expo entry point
