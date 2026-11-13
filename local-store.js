@@ -1,4 +1,6 @@
 const { parseDate } = require('./custody-engine');
+const { holidayRuleError, MAX_RULES } = require('./holiday-rules');
+const { deviationError, MAX_DEVIATIONS } = require('./deviation-log');
 
 const STORAGE_KEY = '@custody_calendar_data';
 const RECOVERY_KEY = '@custody_calendar_recovery';
@@ -6,12 +8,16 @@ const BACKUP_FORMAT = 'custody-calendar-backup';
 const MAX_BACKUP_BYTES = 4000000;
 const MAX_DOCUMENT_BYTES = 1800000;
 const HISTORY_LIMIT = 20;
-const FAMILY_KEYS = ['parents', 'children', 'parentColors', 'childColors', 'parentLocations', 'parentPhones', 'entries', 'scheduleAssignments', 'reminderSettings'];
+// Version 2 added holiday rules and the planned-vs-actual log. Version 1 saves
+// and backups still load; those two lists start empty.
+const SCHEMA_VERSION = 2;
+const ADDED_IN_V2 = ['holidayRules', 'deviations'];
+const FAMILY_KEYS = ['parents', 'children', 'parentColors', 'childColors', 'parentLocations', 'parentPhones', 'entries', 'scheduleAssignments', 'reminderSettings', 'holidayRules', 'deviations'];
 
 function defaults() {
   return {
     parents: [], children: [], parentColors: {}, childColors: {}, parentLocations: {}, parentPhones: {},
-    entries: [], scheduleAssignments: [], reportingMode: 'custom', customStart: '', customEnd: '',
+    entries: [], scheduleAssignments: [], holidayRules: [], deviations: [], reportingMode: 'custom', customStart: '', customEnd: '',
     quarterYear: new Date().getFullYear(), quarter: 'Q1', preset: 'year-to-date', analysisChild: 'all', viewMode: 'calendar',
     reminderSettings: { enabled: false, leadMinutes: 60, showDetails: false },
   };
@@ -46,7 +52,7 @@ function normalizeData(input) {
     ids.add(entry.id);
     insist(string(entry.parent, 100) && date(entry.beginDate) && date(entry.endDate), 'An entry has invalid names or dates.');
     insist(object(entry.childrenPresent) && Object.values(entry.childrenPresent).every((v) => typeof v === 'boolean'), 'Invalid children on an entry.');
-    for (const key of ['note', 'location', 'exchangeTime', 'exchangePlace', 'scheduleId']) insist(entry[key] === undefined || string(entry[key]), `Invalid entry ${key}.`);
+    for (const key of ['note', 'location', 'exchangeTime', 'exchangePlace', 'scheduleId', 'holidayRuleId']) insist(entry[key] === undefined || string(entry[key]), `Invalid entry ${key}.`);
     insist(entry.isException === undefined || typeof entry.isException === 'boolean', 'Invalid holiday flag.');
   });
   insist(Array.isArray(d.scheduleAssignments) && d.scheduleAssignments.length <= 500, 'Invalid schedule list.');
@@ -58,6 +64,22 @@ function normalizeData(input) {
     insist(s.eowDay === undefined || ['fri', 'sat'].includes(s.eowDay), 'Invalid weekend start.');
     insist(s.midweek === undefined || (Number.isInteger(s.midweek) && s.midweek >= 0 && s.midweek <= 6), 'Invalid midweek day.');
     for (const key of ['secondary', 'p1', 'p2']) insist(s[key] === undefined || string(s[key], 100), 'Invalid schedule parent.');
+  });
+  insist(Array.isArray(d.holidayRules) && d.holidayRules.length <= MAX_RULES, 'Invalid or oversized holiday rule list.');
+  const ruleIds = new Set();
+  d.holidayRules.forEach((rule) => {
+    const error = holidayRuleError(rule);
+    insist(!error, error);
+    insist(!ruleIds.has(rule.id), 'Holiday rules must have unique IDs.');
+    ruleIds.add(rule.id);
+  });
+  insist(Array.isArray(d.deviations) && d.deviations.length <= MAX_DEVIATIONS, 'Invalid or oversized planned-vs-actual log.');
+  const deviationIds = new Set();
+  d.deviations.forEach((deviation) => {
+    const error = deviationError(deviation);
+    insist(!error, error);
+    insist(!deviationIds.has(deviation.id), 'Log entries must have unique IDs.');
+    deviationIds.add(deviation.id);
   });
   insist(['custom', 'quarter', 'preset'].includes(d.reportingMode) && date(d.customStart) && date(d.customEnd), 'Invalid reporting settings.');
   insist(Number.isInteger(d.quarterYear) && d.quarterYear >= 100 && d.quarterYear <= 9999 && ['Q1', 'Q2', 'Q3', 'Q4'].includes(d.quarter), 'Invalid reporting quarter.');
@@ -72,7 +94,7 @@ function normalizeData(input) {
 }
 
 function snapshot(data) { return Object.fromEntries(FAMILY_KEYS.map((key) => [key, data[key]])); }
-function newDocument(data = defaults()) { return { schemaVersion: 1, data: normalizeData(data), history: [], updatedAt: null }; }
+function newDocument(data = defaults()) { return { schemaVersion: SCHEMA_VERSION, data: normalizeData(data), history: [], updatedAt: null }; }
 
 function readDocument(raw) {
   if (raw === null) return newDocument();
@@ -82,29 +104,32 @@ function readDocument(raw) {
     insist(object(input) && Array.isArray(input.parents) && Array.isArray(input.children) && Array.isArray(input.entries), 'Unrecognized legacy household data.');
     return newDocument(input);
   }
-  insist(input.schemaVersion === 1, 'This data requires a newer app version.');
-  insist(object(input.data) && Object.keys(defaults()).every((key) => Object.hasOwn(input.data, key)), 'The saved household is incomplete.');
+  insist(input.schemaVersion === 1 || input.schemaVersion === SCHEMA_VERSION, 'This data requires a newer app version.');
+  const required = (key) => input.schemaVersion !== 1 || !ADDED_IN_V2.includes(key);
+  insist(object(input.data) && Object.keys(defaults()).filter(required).every((key) => Object.hasOwn(input.data, key)), 'The saved household is incomplete.');
   insist(Array.isArray(input.history) && input.history.length <= HISTORY_LIMIT, 'Invalid change history.');
   const data = normalizeData(input.data);
   const historyIds = new Set();
   const history = input.history.map((h) => {
     insist(object(h) && string(h.id, 200) && h.id && !historyIds.has(h.id) && string(h.label, 200) && typeof h.at === 'string' && Number.isFinite(Date.parse(h.at)), 'Invalid history record.');
     historyIds.add(h.id);
-    insist(object(h.before) && FAMILY_KEYS.every((key) => Object.hasOwn(h.before, key)), 'A history snapshot is incomplete.');
+    insist(object(h.before) && FAMILY_KEYS.filter(required).every((key) => Object.hasOwn(h.before, key)), 'A history snapshot is incomplete.');
     return { id: h.id, label: h.label, at: h.at, group: string(h.group, 300) ? h.group : null, before: snapshot(normalizeData(h.before)) };
   });
   insist(input.updatedAt === null || Number.isFinite(Date.parse(input.updatedAt)), 'Invalid save date.');
-  return { schemaVersion: 1, data, history, updatedAt: input.updatedAt };
+  return { schemaVersion: SCHEMA_VERSION, data, history, updatedAt: input.updatedAt };
 }
 
 function describeChange(before, after) {
   if (JSON.stringify(before.parents) !== JSON.stringify(after.parents)) return 'Changed parents or primary parent';
   if (JSON.stringify(before.children) !== JSON.stringify(after.children)) return 'Changed children';
   if (JSON.stringify(before.entries) !== JSON.stringify(after.entries)) {
+    if (JSON.stringify(before.holidayRules) !== JSON.stringify(after.holidayRules)) return 'Changed holiday rules';
     if (after.entries.length > before.entries.length) return `Added ${after.entries.length - before.entries.length} custody period(s)`;
     if (after.entries.length < before.entries.length) return `Removed ${before.entries.length - after.entries.length} custody period(s)`;
     return 'Edited custody details';
   }
+  if (JSON.stringify(before.deviations) !== JSON.stringify(after.deviations)) return 'Changed the planned-vs-actual log';
   if (JSON.stringify(before.reminderSettings) !== JSON.stringify(after.reminderSettings)) return 'Changed reminder preferences';
   return 'Updated household details';
 }
@@ -120,7 +145,7 @@ function changeDocument(doc, patch, { label, group = null, now = new Date(), id 
     const item = { id, at: now.toISOString(), label: label || describeChange(doc.data, data), group, before: merged ? last.before : snapshot(doc.data) };
     history = [item, ...(merged ? history.slice(1) : history)].slice(0, HISTORY_LIMIT);
   }
-  const result = { schemaVersion: 1, data, history, updatedAt: now.toISOString() };
+  const result = { schemaVersion: SCHEMA_VERSION, data, history, updatedAt: now.toISOString() };
   while (history.length && bytes(result) > MAX_DOCUMENT_BYTES) history.pop();
   insist(!changed || history.length > 0, 'Not enough space to retain undo for this change. Save a backup and reduce the household size first.');
   return result;
@@ -154,7 +179,8 @@ function parseBackup(raw) {
   insist(value?.format === BACKUP_FORMAT, 'This is not a complete Custody Calendar backup. CSV and calendar files cannot be restored.');
   insist(value.version === 1, 'This backup requires a newer app version.');
   insist(Number.isFinite(Date.parse(value.exportedAt)), 'The backup date is invalid.');
-  insist(value.document?.schemaVersion === 1, 'The backup does not contain a complete versioned household.');
+  insist(Number.isInteger(value.document?.schemaVersion), 'The backup does not contain a complete versioned household.');
+  insist(value.document.schemaVersion <= SCHEMA_VERSION, 'This backup requires a newer app version.');
   const document = readDocument(JSON.stringify(value.document));
   return { document, exportedAt: value.exportedAt };
 }
@@ -192,4 +218,4 @@ function createRepository(storage) {
   };
 }
 
-module.exports = { STORAGE_KEY, RECOVERY_KEY, HISTORY_LIMIT, MAX_BACKUP_BYTES, defaults, normalizeData, newDocument, readDocument, snapshot, changeDocument, restoreHistory, createBackup, parseBackup, replacementDocument, createRepository, storageFailureMessage };
+module.exports = { STORAGE_KEY, RECOVERY_KEY, HISTORY_LIMIT, SCHEMA_VERSION, MAX_BACKUP_BYTES, defaults, normalizeData, newDocument, readDocument, snapshot, changeDocument, restoreHistory, createBackup, parseBackup, replacementDocument, createRepository, storageFailureMessage };
